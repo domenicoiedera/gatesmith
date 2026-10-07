@@ -15,18 +15,30 @@ Commands
   open   --id ID --executor ROLE --change DESC [--owned FILE ...] [--tier A|B|C] [--diff-sha SHA]
   sign   --id ID --reviewer ROLE --verdict pass|block [--note TEXT] [--auto]
   status --id ID
-  gate   --id ID --target push|deploy|migrate [--executor ROLE]
+  gate   --id ID --target push|deploy|migrate [--executor ROLE] [--allowed-signers PATH]
   list   [--all]
   close  --id ID --note TEXT [--by ROLE]
   lookup --diff-sha SHA
+  seal   --key PRIVATE_KEY
+  verify --allowed-signers PATH [--signer PRINCIPAL]
 
-Exit codes: 0 cleared / success, 1 blocked / failure, 2 usage.
+The registry is hash-chained (see :mod:`gatesmith.chain`): every verb verifies
+the chain before it reads, and a broken chain is a hard error. ``gate`` also
+verifies the seal when one is present, and binds the sealing principal to
+``signoff.reviewer``, which must differ from ``entry.executor``. ``seal`` and
+``verify`` use the optional ``ssh-keygen``; the trust anchor is an
+``allowed_signers`` file the verifier supplies from outside the repo. New
+flags here are CLI-only in this wave — there is no ``gatesmith.yaml`` wiring.
+
+Exit codes: 0 cleared / success, 1 blocked / failure, 2 usage or unreadable
+input. Chain failure is a block (1) at the gate and a usage error (2) elsewhere.
 """
 
 import datetime
+import os
 import sys
 
-from . import config, store
+from . import chain, config, seal, store
 
 DEFAULT_REGISTRY = "./review-registry.json"
 ALLOWED_TARGETS = {"push", "deploy", "migrate"}
@@ -42,10 +54,28 @@ def _registry(args):
 
 
 def load_reg(path):
-    return store.load_json(path, {"reviews": []})
+    """Load the review registry, verifying the hash chain.
+
+    An absent or empty file is a fresh registry (nothing declared yet). A file
+    that exists is verified as a v2 hash chain: a broken chain, a missing chain
+    field, or a pre-chain (marker-less) registry all raise, so no verb can read
+    a tampered chain as if it were sound.
+    """
+    present = bool(path) and os.path.exists(path) and os.path.getsize(path) > 0
+    reg = store.load_json(path, {"gatesmith_registry": {"v": chain.CHAIN_VERSION},
+                                 "reviews": []})
+    if not present:
+        reg.setdefault("gatesmith_registry", {"v": chain.CHAIN_VERSION})
+        reg.setdefault("reviews", [])
+        return reg
+    chain.verify_chain(reg)
+    return reg
 
 
 def save_reg(path, reg):
+    """Write the registry with a fresh, self-consistent chain."""
+    reg["gatesmith_registry"] = {"v": chain.CHAIN_VERSION}
+    chain.stamp(reg.setdefault("reviews", []))
     store.save_json(path, reg)
 
 
@@ -170,8 +200,45 @@ def cmd_status(args):
     return 0
 
 
+def _enforce_seal(args, registry, reg, entry, signoff):
+    """Verify a present seal and bind its principal; ``None`` means admitted.
+
+    A chain-broken registry is handled by the caller (gate exit 1). Here we
+    handle the seal: when a ``<registry>.sig`` sidecar exists the gate MUST
+    verify it and MUST confirm the sealing principal equals ``signoff.reviewer``
+    (already known to differ from the executor). No seal sidecar means the
+    registry was never sealed — the chain and signoff checks stand, as before.
+    """
+    if not os.path.exists(seal.sig_path(registry)):
+        return None
+    anchor = getattr(args, "allowed_signers", None)
+    if not anchor:
+        print("GATE-BLOCKED: registry is sealed but no --allowed-signers trust "
+              "anchor was supplied — the seal cannot be verified (failing closed).",
+              file=sys.stderr)
+        return 1
+    warning = seal.trust_anchor_warning(anchor, registry)
+    if warning:
+        print(warning, file=sys.stderr)
+    code, detail, principals = seal.verify(registry, reg.get("reviews", []), anchor)
+    if code != 0:
+        print(f"GATE-BLOCKED: seal verification failed — {detail}", file=sys.stderr)
+        return 1
+    if signoff["reviewer"] not in principals:
+        print(f"GATE-BLOCKED: sealing principal {principals} != signoff.reviewer "
+              f"'{signoff['reviewer']}' — the seal does not bind this reviewer.",
+              file=sys.stderr)
+        return 1
+    return None
+
+
 def cmd_gate(args):
-    reg = load_reg(_registry(args))
+    registry = _registry(args)
+    try:
+        reg = load_reg(registry)
+    except chain.ChainBrokenError as exc:
+        print(f"GATE-BLOCKED: {exc}", file=sys.stderr)
+        return 1
     entry = review(reg, args.id)
     if not entry:
         print(f"GATE-BLOCKED: no review '{args.id}' exists — nothing was reviewed.", file=sys.stderr)
@@ -197,6 +264,9 @@ def cmd_gate(args):
         print(f"GATE-BLOCKED: gate invoked by '{args.executor}' but review '{args.id}' was "
               f"opened by executor '{entry['executor']}'.", file=sys.stderr)
         return 1
+    blocked = _enforce_seal(args, registry, reg, entry, signoff)
+    if blocked is not None:
+        return blocked
     print(f"GATE-OPEN: review '{args.id}' independently passed "
           f"({signoff['reviewer']}, tier {entry.get('tier', 'C')}); '{args.target}' may proceed.")
     return 0
@@ -251,6 +321,35 @@ def cmd_lookup(args):
     return 0
 
 
+def cmd_seal(args):
+    registry = _registry(args)
+    reg = load_reg(registry)
+    code, detail = seal.seal(registry, reg.get("reviews", []), args.key)
+    if code != 0:
+        print(f"SEAL-FAILED: {detail}", file=sys.stderr)
+        return code
+    head = chain.head_hash(reg.get("reviews", []))
+    print(f"sealed '{registry}': head_hash={head} entries={len(reg.get('reviews', []))}")
+    print(f"  digest:    {seal.digest_path(registry)}")
+    print(f"  signature: {seal.sig_path(registry)}")
+    return 0
+
+
+def cmd_verify(args):
+    registry = _registry(args)
+    reg = load_reg(registry)
+    warning = seal.trust_anchor_warning(args.allowed_signers, registry)
+    if warning:
+        print(warning, file=sys.stderr)
+    code, detail, principals = seal.verify(
+        registry, reg.get("reviews", []), args.allowed_signers, signer=args.signer)
+    if code == 0:
+        print(f"verify OK: chain sound; seal signed by {', '.join(principals)}")
+        return 0
+    print(f"verify FAILED: {detail}", file=sys.stderr)
+    return code
+
+
 def add_parser(subparsers):
     parser = subparsers.add_parser("review", help="fail-closed two-agent review gate")
     parser.add_argument("--registry", default=None,
@@ -282,6 +381,8 @@ def add_parser(subparsers):
     p.add_argument("--id", required=True)
     p.add_argument("--target", required=True, choices=sorted(ALLOWED_TARGETS))
     p.add_argument("--executor", default="")
+    p.add_argument("--allowed-signers", metavar="PATH", dest="allowed_signers",
+                   help="trust anchor (allowed_signers file) supplied from outside the repo")
     p.set_defaults(fn=cmd_gate)
 
     p = sub.add_parser("list")
@@ -297,4 +398,16 @@ def add_parser(subparsers):
     p = sub.add_parser("lookup")
     p.add_argument("--diff-sha", required=True)
     p.set_defaults(fn=cmd_lookup)
+
+    p = sub.add_parser("seal")
+    p.add_argument("--key", required=True, metavar="PRIVATE_KEY",
+                   help="ssh-keygen private key that signs the chain head")
+    p.set_defaults(fn=cmd_seal)
+
+    p = sub.add_parser("verify")
+    p.add_argument("--allowed-signers", required=True, metavar="PATH", dest="allowed_signers",
+                   help="trust anchor (allowed_signers file) supplied from outside the repo")
+    p.add_argument("--signer", metavar="PRINCIPAL", default=None,
+                   help="restrict verification to this principal")
+    p.set_defaults(fn=cmd_verify)
     return parser
