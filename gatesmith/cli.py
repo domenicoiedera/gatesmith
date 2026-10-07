@@ -6,6 +6,7 @@ a hard error (exit 2), never a silent empty result.
 """
 
 import argparse
+import subprocess
 import sys
 
 from . import __version__, config, evidence, frozen, lanes, review, store
@@ -50,6 +51,14 @@ def main(argv=None):
         return 2
     except store.RegistryError as exc:
         print(f"gatesmith: unreadable registry — {exc}", file=sys.stderr)
+        return 2
+    except subprocess.TimeoutExpired as exc:
+        # G10: a bounded subprocess (git in evidence/lanes, ssh-keygen in seal)
+        # that did not answer is an unreadable instrument — a hard error (2),
+        # never a traceback and never exit 1, which a caller reads as "blocked".
+        # `TimeoutExpired` is a `SubprocessError`, NOT an `OSError`, so the
+        # handler below never saw it.
+        print(f"gatesmith: timed out — {exc}", file=sys.stderr)
         return 2
     except OSError as exc:
         print(f"gatesmith: I/O error — {exc}", file=sys.stderr)

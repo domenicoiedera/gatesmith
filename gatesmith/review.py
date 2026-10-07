@@ -32,16 +32,25 @@ the explicit, loud opt-out that names the residual risk. ``seal`` and ``verify``
 use the optional ``ssh-keygen``. New flags here are CLI-only in this wave —
 there is no ``gatesmith.yaml`` wiring.
 
-Exit codes (decision D5): 0 cleared / success, 1 blocked / failure, 2 usage or
-unreadable input, and one taxonomy across the verbs.
-  * ``gate``   — 1 on any integrity failure (chain broken / structure / legacy)
-    and on a missing or non-verifying seal; 2 on a malformed registry shape
-    (missing ``id``, wrong types, ``reviews`` not a list) or usage — always a
-    clean message, never a traceback.
-  * ``verify`` — 1 when the chain fails, no seal is present, or the seal does
-    not verify; 2 on an unreadable registry/anchor or usage.
+Exit codes (decisions D5, G12): one taxonomy per verb class, never a traceback.
+  * DECISION verbs (``gate``, ``verify``) — 0 admitted/verified, 1 blocked. The
+    ``gate`` is 1 on any integrity failure (chain broken / structure / legacy)
+    and on a missing or non-verifying seal; ``verify`` is 1 when the chain
+    fails, no seal is present, or the seal does not verify. Both are 2 on a
+    malformed registry shape (missing ``id``, wrong types, ``reviews`` not a
+    list) or usage — always a clean message.
   * ``seal``   — 0 sealed; 2 cannot seal (no tool, I/O error, usage).
-  * ``status`` / ``list`` / ``lookup`` — informational, always 0.
+  * INFORMATIONAL verbs (``status`` / ``list`` / ``lookup``) — **0** when the
+    artifact is readable (whatever the verdict) and **2** when it cannot be read
+    (broken chain, malformed shape, usage). Such a verb makes no gate decision,
+    so a readable-but-blocked review is 0 and an unreadable artifact is a hard
+    error (2) — it is never a silent 0. (They do NOT return 1 on an integrity
+    failure: 1 is a gate DECISION, and a verb that cannot read the artifact has
+    made none.)
+
+A CLOSED review (``status == "closed"``) is blocked in EVERY verb that reports
+a verdict (G11): closing retires a review, so ``gate`` and the informational
+verbs share the one block reason ``_block_reason``.
 
 One rule governs the informational verbs (G1): **a verb may only report the
 gate's decision if it re-derives it the same way the gate does — otherwise it
@@ -188,6 +197,14 @@ def review(reg, rid):
 
 
 def gate_granted(entry):
+    """The shared chain+signoff admission test (the seal lives elsewhere).
+
+    A CLOSED review never gates (G11): closing is how a superseded review is
+    retired, so ``status`` must agree with ``gate`` that it blocks — sharing
+    this one predicate is what keeps them from diverging.
+    """
+    if entry["status"] == "closed":
+        return False
     signoff = entry["signoff"]
     return bool(signoff["verdict"] == "pass" and signoff["reviewer"]
                 and signoff["reviewer"] != entry["executor"])
@@ -244,16 +261,36 @@ def _seal_verdict(registry, entries, reviewer, anchor):
     return ("invalid", detail, principals)
 
 
-def _seal_label(registry, entries, anchor):
-    """Render ``seal: <state>`` honestly for the informational verbs (G1).
+def _seal_label(registry, entries, anchor, reviewers=None):
+    """Render ``seal: <state>`` honestly for the informational verbs (G1/G9).
 
-    ``VERIFIED`` appears only after a real verification; a present-but-unchecked
-    seal reads ``present (UNVERIFIED …)`` — never a bare ``sealed``.
+    ``VERIFIED`` appears only after a real verification AND only when the
+    sealing principal actually *binds* the reviewer(s) the caller reports — the
+    same principal→``signoff.reviewer`` test the gate applies. When an entry's
+    reviewer is known and does NOT match the sealing principal, the line says so
+    (``signature valid … — does NOT bind reviewer '…'``) rather than a bare
+    ``VERIFIED``: otherwise ``list``/``lookup`` would report the gate's
+    admit-condition minus its binding — the surviving G1 false-oracle variant
+    (``status`` was fixed, these two were not). ``reviewers`` is the list of the
+    reported entries' reviewers (``None`` when the caller holds no entry).
     """
     outcome, detail, principals = _seal_verdict(registry, entries, None, anchor)
     if outcome == "verified":
         names = ", ".join(principals) if principals else "?"
-        return f"VERIFIED (principal={names})"
+        known = [reviewer for reviewer in (reviewers or []) if reviewer]
+        unbound = [reviewer for reviewer in known if reviewer not in principals]
+        if not known:
+            return f"VERIFIED (principal={names})"
+        if not unbound:
+            bound = ", ".join(dict.fromkeys(known))
+            return f"VERIFIED (principal={names}; binds reviewer {bound})"
+        missing = ", ".join(dict.fromkeys(unbound))
+        if len(known) == 1:
+            return (f"signature valid (principal={names}) — does NOT bind "
+                    f"reviewer '{missing}'")
+        return (f"signature valid (principal={names}) — binds "
+                f"{len(known) - len(unbound)} of {len(known)} shown reviewer(s); "
+                f"does NOT bind {missing}")
     if outcome == "none":
         return "none"
     if outcome == "unverified":
@@ -261,13 +298,13 @@ def _seal_label(registry, entries, anchor):
     return f"FAILED ({detail})"
 
 
-def _print_seal_line(registry, entries, anchor):
+def _print_seal_line(registry, entries, anchor, reviewers=None):
     """Emit the D4 anchor warning (if any) then the honest ``seal:`` line."""
     if anchor:
         warning = seal.trust_anchor_warning(anchor)
         if warning:
             print(warning, file=sys.stderr)
-    print(f"seal: {_seal_label(registry, entries, anchor)}")
+    print(f"seal: {_seal_label(registry, entries, anchor, reviewers)}")
 
 
 def cmd_open(args):
@@ -356,13 +393,16 @@ def cmd_sign(args):
 
 
 def cmd_status(args):
-    """Informational, always exit 0, and never a bare ``GATE: OPEN`` (D3/G1).
+    """Informational: **0** on a readable registry, **2** when it cannot be read.
 
     The GATE line is one of ``BLOCKED: <reason>``, ``OPEN (seal VERIFIED)``,
     ``OPEN (UNSEALED — NOT ENFORCED)`` or ``OPEN (seal present, UNVERIFIED)``.
     It reports the gate's decision only when ``--allowed-signers`` is supplied,
     because then it re-derives it through the gate's own :func:`_seal_verdict`;
-    without an anchor it says plainly that the seal was NOT verified.
+    without an anchor it says plainly that the seal was NOT verified. A closed
+    review reads ``BLOCKED: review is closed`` (G11). Exit is 0 whatever the
+    verdict; an unreadable artifact (broken chain / shape / usage) escapes to
+    :mod:`gatesmith.cli` and exits 2 (G12).
     """
     registry = _registry(args)
     reg = load_reg(registry)
@@ -500,10 +540,17 @@ def cmd_list(args):
         print("no matching reviews")
     for entry in shown:
         signoff = entry["signoff"]
+        # G11: closing retires a review — say so, do not present it as gating.
+        retired = " (does not gate)" if entry["status"] == "closed" else ""
         print(f"{entry['id']}: [{entry['status']}] tier={entry.get('tier', 'C')} "
               f"executor={entry['executor']} "
-              f"signoff={signoff['verdict']}/{signoff['reviewer'] or '-'} — {entry['change']}")
-    _print_seal_line(registry, entries, getattr(args, "allowed_signers", None))
+              f"signoff={signoff['verdict']}/{signoff['reviewer'] or '-'}{retired} — {entry['change']}")
+    # G9: bind over EVERY entry the verb holds, not only the ones a filter
+    # happens to show — otherwise `list` (default filters to open/blocked) could
+    # hide the unbound entry and still print a bare `seal: VERIFIED` while the
+    # gate blocks for it.
+    _print_seal_line(registry, entries, getattr(args, "allowed_signers", None),
+                     [entry["signoff"]["reviewer"] for entry in entries])
     return 0
 
 
@@ -526,7 +573,12 @@ def cmd_close(args):
 
 
 def cmd_lookup(args):
-    """Informational, always exit 0 (D5); names the seal state honestly (G1)."""
+    """Informational: 0 on a readable registry, 2 when it cannot be read (G12).
+
+    Names the seal state honestly and binds the sealing principal to each hit's
+    ``signoff.reviewer`` (G1/G9) — a hit whose reviewer is not the sealing
+    principal is reported as NOT bound, never a bare ``VERIFIED``.
+    """
     registry = _registry(args)
     reg = load_reg(registry)
     entries = reg.get("reviews", [])
@@ -535,10 +587,13 @@ def cmd_lookup(args):
         print(f"no gates with diff_sha {args.diff_sha[:12]}")
     for entry in hits:
         signoff = entry["signoff"]
+        retired = " (does not gate)" if entry["status"] == "closed" else ""
         print(f"{entry['id']}: [{entry['status']}] tier={entry.get('tier', 'C')} "
               f"verdict={signoff['verdict']} reviewer={signoff['reviewer'] or '-'} "
-              f"at={signoff['at']}")
-    _print_seal_line(registry, entries, getattr(args, "allowed_signers", None))
+              f"at={signoff['at']}{retired}")
+    # G9: as in `list`, bind over every entry the registry holds.
+    _print_seal_line(registry, entries, getattr(args, "allowed_signers", None),
+                     [entry["signoff"]["reviewer"] for entry in entries])
     return 0
 
 

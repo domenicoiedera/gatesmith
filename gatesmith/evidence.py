@@ -22,7 +22,8 @@ Usage::
       [--report-path-regex RX]
 
 Exit codes: 0 all checks pass (may sign pass), 1 at least one FAIL (must
-block), 2 usage.
+block), 2 usage — or a bounded ``git`` call that did not answer in time (G10),
+which is an unreadable instrument, not a passing check.
 """
 
 import os
@@ -32,6 +33,11 @@ import subprocess
 from . import config, frozen
 
 DEFAULT_FROZEN = "./FROZEN-registry.json"
+
+# Seconds — every git call here is bounded. A hung git raises
+# subprocess.TimeoutExpired, which `gatesmith.cli.main` maps to exit 2 (G10);
+# it must never become a wrong PASS/FAIL verdict.
+GIT_TIMEOUT = 30
 
 # Auto-advance markers: a change that would move work forward without a human.
 AUTOADV = re.compile(r"auto.*(approve|advance)|skip.*review", re.I)
@@ -94,7 +100,7 @@ def load_markers(path):
 
 def git(repo, *argv):
     return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True,
-                          timeout=30)
+                          timeout=GIT_TIMEOUT)
 
 
 def _parse_owned(raw):

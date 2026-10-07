@@ -80,6 +80,31 @@ class AttackBase(unittest.TestCase):
             json.dump(reg, handle, indent=2)
 
 
+def write_slow_shim(shim_dir, interpreter, seconds=5):
+    """Write an ``ssh-keygen`` shim that sleeps past any bounded timeout.
+
+    Portable (G3): a ``.bat`` on Windows, a POSIX script elsewhere. Space-safe
+    (G13): a shebang cannot carry an interpreter path containing a space — the
+    kernel splits it at the first space and fails with ``bad interpreter`` — so
+    the POSIX shim indirects through ``/bin/sh``, which QUOTES the path when it
+    execs it. The old body (``#!{sys.executable}``) was green only because this
+    machine's interpreter path happens to have no space.
+    """
+    if os.name == "nt":
+        shim = os.path.join(shim_dir, "ssh-keygen.bat")
+        body = (f'@echo off\r\n"{interpreter}" -c '
+                f'"import time; time.sleep({seconds})"\r\n')
+    else:
+        shim = os.path.join(shim_dir, "ssh-keygen")
+        body = ("#!/bin/sh\n"
+                f'exec "{interpreter}" -c "import time; time.sleep({seconds})"\n')
+    with open(shim, "w", encoding="utf-8", newline="") as handle:
+        handle.write(body)
+    if os.name == "posix":                       # the exec bit is POSIX-only
+        os.chmod(shim, 0o755)
+    return shim
+
+
 # ── H1 / F1: the executor-never-seals attack ─────────────────────────────────
 class SealRequiredTest(AttackBase):
     def test_F1_executor_never_seals_is_blocked(self):
@@ -423,19 +448,10 @@ class TimeoutTest(AttackBase):
         from gatesmith import seal
         shim_dir = self.path("bin")
         os.makedirs(shim_dir, exist_ok=True)
-        # A PORTABLE shim (G3): the old one was a `#!/bin/sh` script, which never
-        # runs on Windows. This one re-invokes the running interpreter and sleeps,
-        # so the bounded `_run` timeout is what stops it, on any OS.
-        if os.name == "nt":
-            shim = os.path.join(shim_dir, "ssh-keygen.bat")
-            body = f'@echo off\r\n"{sys.executable}" -c "import time; time.sleep(5)"\r\n'
-        else:
-            shim = os.path.join(shim_dir, "ssh-keygen")
-            body = f"#!{sys.executable}\nimport time\ntime.sleep(5)\n"
-        with open(shim, "w", encoding="utf-8", newline="") as handle:
-            handle.write(body)
-        if os.name == "posix":                       # the exec bit is POSIX-only
-            os.chmod(shim, 0o755)
+        # A PORTABLE shim (G3: `.bat` on Windows, POSIX script elsewhere) that
+        # re-invokes the running interpreter and sleeps, so the bounded `_run`
+        # timeout — not the shim — is what stops it. Space-safe (G13).
+        write_slow_shim(shim_dir, sys.executable, seconds=5)
         reg = self.path(REG)
         with open(reg, "w", encoding="utf-8") as handle:
             json.dump({"gatesmith_registry": {"v": 2}, "reviews": []}, handle)
@@ -456,6 +472,29 @@ class TimeoutTest(AttackBase):
         self.assertIn("timed out", detail)
         self.assertLess(time.monotonic() - started, 4.0)   # did not hang on the 5s sleep
 
+    @unittest.skipUnless(os.name == "posix", "POSIX shebang semantics (G13)")
+    def test_G13_posix_shim_survives_a_space_in_the_interpreter_path(self):
+        """A raw ``#!{interpreter}`` shim dies if the path has a space (G13).
+
+        We build the shim against an interpreter path that CONTAINS A SPACE (a
+        symlink to the running interpreter). The old body
+        (``#!{sys.executable}``) would split at the first space and fail with
+        ``bad interpreter``; the ``/bin/sh`` indirection quotes the path and
+        runs it. This is discriminating on a machine whose real interpreter path
+        has no space, because the sampled path here does.
+        """
+        spaced = self.path("sp ace")
+        os.makedirs(spaced, exist_ok=True)
+        interp = os.path.join(spaced, "python")
+        os.symlink(sys.executable, interp)
+        shim_dir = self.path("g13bin")
+        os.makedirs(shim_dir, exist_ok=True)
+        shim = write_slow_shim(shim_dir, interp, seconds=0)
+        r = subprocess.run([shim], capture_output=True, shell=False,
+                           encoding="utf-8", errors="replace", timeout=30)
+        self.assertEqual(r.returncode, 0, (shim, r.stdout, r.stderr))
+        self.assertNotIn("bad interpreter", r.stderr)
+
 
 # ── F9: seal I/O is fail-closed ──────────────────────────────────────────────
 class IoFailClosedTest(AttackBase):
@@ -473,6 +512,156 @@ class IoFailClosedTest(AttackBase):
         self.assertEqual(r.returncode, 2, (r.stdout, r.stderr))
         self.assertIn("SEAL-FAILED", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
+
+
+# ── G9: list/lookup must bind the sealing principal to the ENTRY's reviewer ──
+class InformationalBindingTest(AttackBase):
+    """The surviving G1 false-oracle variant: ``list``/``lookup`` routed through
+    ``_seal_label`` with a hard-coded ``reviewer=None``, so they printed a bare
+    ``seal: VERIFIED`` where the gate BLOCKED on the principal→reviewer binding.
+    These tests exercise BOTH verbs (round 2 tested only ``status``) plus the
+    wildcard-principal trigger."""
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_G9_bound_reviewer_is_reported_as_binding(self):
+        rev1 = self.key("rev1")
+        anchor = self.allowed("real_allowed", "rev1", rev1)
+        self.open_sign()                          # reviewer 'rev1' == sealing principal
+        self.assertEqual(self.gs("seal", "--key", rev1).returncode, 0)
+        listing = self.gs("list", "--all", "--allowed-signers", anchor)
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertIn("VERIFIED (principal=rev1; binds reviewer rev1)", listing.stdout)
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_G9_list_and_lookup_do_not_claim_verified_when_the_reviewer_is_unbound(self):
+        rev1 = self.key("rev1")
+        anchor = self.allowed("real_allowed", "rev1", rev1)
+        self.assertEqual(self.gs("open", "--id", "r1", "--executor", "backend",
+                                 "--change", "x", "--diff-sha", "abcd1234").returncode, 0)
+        # reviewer 'rev2' is NOT the sealing principal 'rev1' — the gate blocks.
+        self.assertEqual(self.gs("sign", "--id", "r1", "--reviewer", "rev2",
+                                 "--verdict", "pass").returncode, 0)
+        self.assertEqual(self.gs("seal", "--key", rev1).returncode, 0)
+        gate = self.gs("gate", "--id", "r1", "--target", "push", "--allowed-signers", anchor)
+        self.assertEqual(gate.returncode, 1, (gate.stdout, gate.stderr))
+        self.assertIn("sealing principal", gate.stderr)
+        expected = ("seal: signature valid (principal=rev1) — "
+                    "does NOT bind reviewer 'rev2'")
+        # `list --all`, `list` (which HIDES the done entry — a filter must not
+        # smuggle the bare VERIFIED back), and `lookup`:
+        for verb in (("list", "--all"), ("list",), ("lookup", "--diff-sha", "abcd1234")):
+            r = self.gs(*verb, "--allowed-signers", anchor)
+            self.assertEqual(r.returncode, 0, (verb, r.stdout, r.stderr))
+            self.assertIn(expected, r.stdout, verb)
+            self.assertNotIn("seal: VERIFIED", r.stdout, verb)
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_G9_wildcard_principal_does_not_bind_a_named_reviewer(self):
+        rev1 = self.key("rev1")
+        with open(rev1 + ".pub", encoding="utf-8") as handle:
+            pub = handle.read().strip()
+        wild = self.path("wild")
+        with open(wild, "w", encoding="utf-8") as handle:
+            handle.write(f"* {pub}\n")            # principal literally '*'
+        self.assertEqual(self.gs("open", "--id", "r1", "--executor", "backend",
+                                 "--change", "x", "--diff-sha", "deadbeef").returncode, 0)
+        self.assertEqual(self.gs("sign", "--id", "r1", "--reviewer", "rev1",
+                                 "--verdict", "pass").returncode, 0)
+        self.assertEqual(self.gs("seal", "--key", rev1).returncode, 0)
+        gate = self.gs("gate", "--id", "r1", "--target", "push", "--allowed-signers", wild)
+        self.assertEqual(gate.returncode, 1, (gate.stdout, gate.stderr))
+        self.assertIn("sealing principal", gate.stderr)
+        for verb in (("list", "--all"), ("lookup", "--diff-sha", "deadbeef")):
+            r = self.gs(*verb, "--allowed-signers", wild)
+            self.assertEqual(r.returncode, 0, (verb, r.stdout, r.stderr))
+            self.assertIn("does NOT bind reviewer 'rev1'", r.stdout, verb)
+            self.assertNotIn("seal: VERIFIED", r.stdout, verb)
+
+
+# ── G10: a bounded git that hangs is exit 2, never a traceback or a 1 ────────
+class GitTimeoutTest(AttackBase):
+    @unittest.skipUnless(os.name == "posix", "POSIX shell shim (G10)")
+    def test_G10_a_hung_git_is_a_hard_error_exit_2_never_a_traceback(self):
+        """``subprocess.TimeoutExpired`` is a ``SubprocessError``, NOT an
+        ``OSError``; before G10 the ``timeout=30`` added to ``evidence.git``
+        raised it straight past ``cli.main``'s handlers — an uncaught traceback
+        and exit 1 (which a caller reads as "blocked"). It must exit 2."""
+        from gatesmith import cli, evidence
+        shim_dir = self.path("bin")
+        os.makedirs(shim_dir, exist_ok=True)
+        shim = os.path.join(shim_dir, "git")
+        with open(shim, "w", encoding="utf-8", newline="") as handle:
+            handle.write("#!/bin/sh\nexec sleep 5\n")
+        os.chmod(shim, 0o755)
+        repo = self.path("repo")
+        os.makedirs(repo, exist_ok=True)
+        old_path = os.environ.get("PATH", "")
+        old_timeout = evidence.GIT_TIMEOUT
+        os.environ["PATH"] = shim_dir + os.pathsep + old_path
+        evidence.GIT_TIMEOUT = 0.5
+        try:
+            code = cli.main(["evidence", "--repo", repo, "--base", "base", "--branch", "b"])
+        finally:
+            evidence.GIT_TIMEOUT = old_timeout
+            os.environ["PATH"] = old_path
+        self.assertEqual(code, 2, "a hung git must exit 2, not 1 or a traceback")
+
+
+# ── G11: a CLOSED review is blocked in EVERY reporting verb ──────────────────
+class ClosedReviewTest(AttackBase):
+    def test_G11_a_closed_review_is_blocked_in_every_reporting_verb(self):
+        self.assertEqual(self.gs("open", "--id", "r1", "--executor", "backend",
+                                 "--change", "x", "--diff-sha", "f00d").returncode, 0)
+        self.assertEqual(self.gs("sign", "--id", "r1", "--reviewer", "rev1",
+                                 "--verdict", "pass").returncode, 0)
+        self.assertEqual(self.gs("close", "--id", "r1", "--note", "superseded").returncode, 0)
+        # status (no anchor) must NOT say OPEN once the review is closed
+        status = self.gs("status", "--id", "r1")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("GATE: BLOCKED", status.stdout)
+        self.assertIn("closed", status.stdout.lower())
+        self.assertNotIn("GATE: OPEN", status.stdout)
+        # list / lookup never present the closed entry as gating
+        listing = self.gs("list", "--all")
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertIn("r1: [closed]", listing.stdout)
+        self.assertIn("does not gate", listing.stdout)
+        lookup = self.gs("lookup", "--diff-sha", "f00d")
+        self.assertEqual(lookup.returncode, 0, lookup.stderr)
+        self.assertIn("r1: [closed]", lookup.stdout)
+        self.assertIn("does not gate", lookup.stdout)
+        # and the enforced gate agrees
+        gate = self.gs("gate", "--id", "r1", "--target", "push")
+        self.assertEqual(gate.returncode, 1, gate.stderr)
+        self.assertIn("CLOSED", gate.stderr)
+
+
+# ── G12: pin the informational exit taxonomy (0 readable / 2 unreadable) ─────
+class InformationalTaxonomyTest(AttackBase):
+    def test_G12_informational_verbs_exit_2_when_the_artifact_is_unreadable(self):
+        for rid in ("r1", "r2"):
+            self.assertEqual(self.gs("open", "--id", rid, "--executor", "backend",
+                                     "--change", "x").returncode, 0)
+        with open(self.path(REG), encoding="utf-8") as handle:
+            reg = json.load(handle)
+        reg["reviews"][0]["change"] = "TAMPER-NO-RESTAMP"     # break the chain
+        with open(self.path(REG), "w", encoding="utf-8") as handle:
+            json.dump(reg, handle, indent=2)
+        for verb in (("status", "--id", "r1"), ("list",), ("lookup", "--diff-sha", "x")):
+            r = self.gs(*verb)
+            self.assertEqual(r.returncode, 2, (verb, r.stdout, r.stderr))
+            self.assertNotIn("Traceback", r.stderr, verb)
+            self.assertIn("chain broken", r.stderr, verb)
+        # the DECISION verb (gate) still blocks with 1 — the class split is real
+        gate = self.gs("gate", "--id", "r1", "--target", "push")
+        self.assertEqual(gate.returncode, 1, (gate.stdout, gate.stderr))
+
+    def test_G12_docstring_states_the_taxonomy_not_always_zero(self):
+        from gatesmith import review
+        doc = review.__doc__ or ""
+        self.assertNotIn("always 0", doc)
+        self.assertIn("INFORMATIONAL", doc)
+        self.assertIn("cannot be read", doc)
 
 
 if __name__ == "__main__":

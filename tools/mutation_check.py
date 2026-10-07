@@ -9,13 +9,17 @@ decoration.
 
 Run:  python3.12 tools/mutation_check.py
 
-Guards covered (G7 extends the original three with the round-2 two):
+Guards covered (G7 extends the original three with the round-2 two; G15 adds the
+round-3 three):
 
   * chain-break detection            (tests.test_chain_seal, A1)
   * principal binding                (tests.test_chain_seal, A4)
   * seal requirement (D1)            (tests.test_attacks, F1)
   * informational seal honesty (G1)  (tests.test_attacks, G1)  <- NEW in round 2
   * shape->2 vs integrity->1 (G2)    (tests.test_attacks, G2)  <- NEW in round 2
+  * principal-binding threading (G9) (tests.test_attacks, G9)  <- NEW in round 3
+  * closed-status blocking (G11)     (tests.test_attacks, G11) <- NEW in round 3
+  * timeout -> exit 2 mapping (G10)  (tests.test_attacks, G10) <- NEW in round 3
 
 Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
 every guard goes RED when disabled and GREEN, byte-identical, when restored.
@@ -69,6 +73,31 @@ MUTATIONS = [
         '        pass  # MUTATION: shape->2 taxonomy disabled',
         "tests.test_attacks.ExitTaxonomyTest."
         "test_G2_malformed_shapes_exit_2_and_never_0",
+    ),
+    (
+        "principal-binding threading (G9)",
+        "gatesmith/review.py",
+        '        unbound = [reviewer for reviewer in known if reviewer not in principals]',
+        '        unbound = []  # MUTATION: list/lookup binding threading disabled',
+        "tests.test_attacks.InformationalBindingTest."
+        "test_G9_list_and_lookup_do_not_claim_verified_when_the_reviewer_is_unbound",
+    ),
+    (
+        "closed-status blocking (G11)",
+        "gatesmith/review.py",
+        '    if entry["status"] == "closed":\n        return False',
+        '    if False:  # MUTATION: closed-status blocking disabled\n        return False',
+        "tests.test_attacks.ClosedReviewTest."
+        "test_G11_a_closed_review_is_blocked_in_every_reporting_verb",
+    ),
+    (
+        "timeout -> exit 2 mapping (G10)",
+        "gatesmith/cli.py",
+        '        print(f"gatesmith: timed out — {exc}", file=sys.stderr)\n'
+        '        return 2',
+        '        raise  # MUTATION: timeout mapping disabled',
+        "tests.test_attacks.GitTimeoutTest."
+        "test_G10_a_hung_git_is_a_hard_error_exit_2_never_a_traceback",
     ),
 ]
 

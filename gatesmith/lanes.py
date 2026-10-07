@@ -22,7 +22,9 @@ Commands
   close   --lane L [--only-active] [--status merged|closed]
   worktrees --repo P [--json] [--out FILE]
 
-Exit codes: 0 clear / success, 1 block / failure, 2 usage.
+Exit codes: 0 clear / success, 1 block / failure, 2 usage — or a bounded
+``git`` call that did not answer in time (G10): an unreadable instrument, never
+a silent CLEAR.
 """
 
 import datetime
@@ -35,6 +37,7 @@ from . import config, frozen, store, worktree
 DEFAULT_REGISTRY = "./lane-registry.json"
 DEFAULT_FROZEN = "./FROZEN-registry.json"
 ACTIVE = {"active", "in_progress", "working"}
+GIT_TIMEOUT = 30  # seconds — every git call here is bounded (G10)
 
 
 def now():
@@ -66,17 +69,23 @@ def lane_by_id(reg, lane_id):
 
 def _git(repo, *argv):
     return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True,
-                          timeout=30)
+                          timeout=GIT_TIMEOUT)
 
 
 def _uncommitted_in(repo):
-    """Files with uncommitted changes in the shared working tree."""
+    """Files with uncommitted changes in the shared working tree.
+
+    A git that *cannot run* (missing binary) declares nothing. A git that
+    TIMES OUT does not: it is swallowed no longer (G10) — the timeout
+    propagates and ``cli.main`` maps it to exit 2, because reading a hung git
+    as "no uncommitted files" would fail the shared-tree guard open.
+    """
     if not os.path.isdir(repo):
         return set()
     try:
         out = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                             capture_output=True, text=True, timeout=30).stdout
-    except Exception:
+                             capture_output=True, text=True, timeout=GIT_TIMEOUT).stdout
+    except OSError:
         return set()
     files = set()
     for line in out.splitlines():
