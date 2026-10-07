@@ -693,7 +693,7 @@ class VerifyScopeTest(AttackBase):
         self.assertIn("chain: sound", verified.stdout)
         self.assertIn("seal: valid (principal=rev1)", verified.stdout)
         self.assertIn("ADMISSION: not evaluated — run 'gate'", verified.stdout)
-        self.assertIn("entries: 1, of which 1 would NOT bind — gate will block",
+        self.assertIn("entries: 1, of which 1 would NOT bind — the gate will block those entries",
                       verified.stdout)
         # never the old, admission-shaped "verify OK" line
         self.assertNotIn("verify OK", verified.stdout)
@@ -742,6 +742,62 @@ class EmptyReviewerTest(AttackBase):
                           lines[0], verb)
             # the bare form the old renderer printed is gone
             self.assertNotEqual(lines[0], "seal: VERIFIED (principal=rev1)", verb)
+
+
+# ── F15: `verify --signer` must not assert a verdict the gate won't reach ────
+class VerifySignerScopeTest(AttackBase):
+    """``--signer`` narrows the principals ``verify`` validated, but the gate
+    evaluates ALL matched principals. With an aliased anchor (two principals on
+    one key) the narrowed view reports an entry unbound while the unrestricted
+    gate ADMITS — so ``verify --signer`` must name the restriction instead of
+    asserting "gate will block". A false block is still a false statement.
+    (Round-5 re-attack, Finding A.)"""
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_F15_verify_signer_narrowing_does_not_assert_the_gates_verdict(self):
+        key = self.key("k1")
+        anchor = self.allowed("aliased_allowed", "rev1,rev2", key)
+        self.assertEqual(self.gs("open", "--id", "r1", "--executor", "backend",
+                                 "--change", "x", "--diff-sha", "d1").returncode, 0)
+        self.assertEqual(self.gs("sign", "--id", "r1", "--reviewer", "rev2",
+                                 "--verdict", "pass").returncode, 0)
+        self.assertEqual(self.gs("seal", "--key", key).returncode, 0)
+        # the unrestricted gate ADMITS: rev2 is among the matched principals
+        gate = self.gs("gate", "--id", "r1", "--target", "push",
+                       "--allowed-signers", anchor)
+        self.assertEqual(gate.returncode, 0, (gate.stdout, gate.stderr))
+        # narrowed to rev1: verify must NOT claim the gate will block
+        verified = self.gs("verify", "--allowed-signers", anchor,
+                           "--signer", "rev1")
+        self.assertEqual(verified.returncode, 0, (verified.stdout, verified.stderr))
+        self.assertNotIn("gate will block", verified.stdout)
+        self.assertIn("would NOT bind --signer 'rev1'", verified.stdout)
+        self.assertIn("the gate evaluates all matched principals", verified.stdout)
+
+
+# ── F16: the shipped CLI must report the version it ships ────────────────────
+class VersionTest(AttackBase):
+    """``gatesmith --version`` and ``gatesmith.__version__`` must agree with
+    ``pyproject.toml``. An output that contradicts the release it ships is the
+    same class of defect as a verb that overclaims — the version lives in two
+    files, so it is pinned rather than remembered. (Round-5 Finding F1.)"""
+
+    def test_F16_version_matches_pyproject_and_the_cli(self):
+        import re
+        from gatesmith import __version__
+        with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as handle:
+            pyproject = handle.read()
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+        self.assertIsNotNone(match, "no version in pyproject.toml")
+        assert match is not None                      # narrow for the type checker
+        expected = match.group(1)
+        self.assertEqual(__version__, expected)
+        out = subprocess.run([sys.executable, "-m", "gatesmith", "--version"],
+                             cwd=self.work, env=self.env, capture_output=True,
+                             shell=False, encoding="utf-8", errors="replace",
+                             timeout=30)
+        self.assertEqual(out.returncode, 0, (out.stdout, out.stderr))
+        self.assertIn(expected, out.stdout)
 
 
 if __name__ == "__main__":

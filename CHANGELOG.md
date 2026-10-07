@@ -7,6 +7,10 @@ All notable changes are recorded here. The format follows
 Every release also notes the failures it exposed, because a release that taught
 us nothing is a release we did not verify.
 
+## [Unreleased]
+
+- Planned: a baseline-comparison battery, and a project config file.
+
 ## [0.2.0] - 2026-10-08
 
 ### Changed
@@ -58,6 +62,12 @@ us nothing is a release we did not verify.
   `verify --signer` asserted "gate will block" from a narrowed principal set
   while the unrestricted gate would admit. Each was found by an independent
   adversary *after* the previous fix had passed its own tests.
+- `gatesmith --version` reported the previous release while the package metadata
+  and this changelog said 0.2.0 — the version lives in two files and only one was
+  bumped. It is now pinned by a test that goes red on the same mistake.
+- `verify`'s unqualified "gate will block" was also false on a mixed registry:
+  the gate is per-id, so it may admit a bound entry. The claim is now scoped to
+  the entries the seal does not bind.
 
 ## [0.1.0] - 2026-10-02
 
@@ -92,7 +102,3 @@ us nothing is a release we did not verify.
   tell", which made every worktree look `unknown`. A clean exit code 1 with no
   diagnostics is now a real negative, while an ambiguous probe still becomes
   `unknown`.
-
-## [Unreleased]
-
-- Planned: a baseline-comparison battery, and a project config file.

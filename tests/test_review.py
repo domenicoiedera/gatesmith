@@ -180,7 +180,8 @@ class ReviewGateTest(unittest.TestCase):
     def test_lookup_finds_and_misses(self):
         self.run_("open", "--id", "rA", "--executor", "backend", "--change", "x",
                   "--tier", "A", "--diff-sha", SHA1)
-        # D5: `lookup` is informational and always exits 0.
+        # D5/G12: `lookup` is informational — 0 when it can report, 2 when the
+        # registry is unreadable or unparseable. It makes no gate decision.
         found = self.run_("lookup", "--diff-sha", SHA1)
         self.assertEqual(found.returncode, 0)
         self.assertIn("rA", found.stdout)

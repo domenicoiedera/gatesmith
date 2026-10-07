@@ -22,6 +22,8 @@ round-3 three; round 4 adds the F13/F14 two):
   * timeout -> exit 2 mapping (G10)  (tests.test_attacks, G10) <- NEW in round 3
   * verify scope honesty (F13)       (tests.test_attacks, F13) <- NEW in round 4
   * empty-reviewer unbindable (F14)  (tests.test_attacks, F14) <- NEW in round 4
+  * verify --signer scope (F15)      (tests.test_attacks, F15) <- NEW in round 5
+  * version single-source (F16)      (tests.test_attacks, F16) <- NEW in round 5
 
 Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
 every guard goes RED when disabled and GREEN, byte-identical, when restored.
@@ -116,6 +118,22 @@ MUTATIONS = [
         '        noreview = 0  # MUTATION: empty-reviewer unbindable rule disabled',
         "tests.test_attacks.EmptyReviewerTest."
         "test_F14_empty_reviewer_entry_is_unbindable_not_bare_verified",
+    ),
+    (
+        "verify --signer scope (F15)",
+        "gatesmith/review.py",
+        '        if signer:',
+        '        if False:  # MUTATION: verify --signer scope honesty disabled',
+        "tests.test_attacks.VerifySignerScopeTest."
+        "test_F15_verify_signer_narrowing_does_not_assert_the_gates_verdict",
+    ),
+    (
+        "version single-source (F16)",
+        "gatesmith/__init__.py",
+        '__version__ = "0.2.0"',
+        '__version__ = "9.9.9"  # MUTATION: version single-source disabled',
+        "tests.test_attacks.VersionTest."
+        "test_F16_version_matches_pyproject_and_the_cli",
     ),
 ]
 

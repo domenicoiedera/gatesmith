@@ -696,8 +696,11 @@ def _verify_scope_line(principals, entries, signer=None):
                      f"NOT bind --signer '{signer}' (the gate evaluates all "
                      f"matched principals)")
         else:
+            # Scope the claim to the unbound entries: the gate is per-id, so on
+            # a MIXED registry it may admit a bound entry — an unqualified
+            # "gate will block" would be a false statement (round-5 Finding F3).
             line += (f" · entries: {total}, of which {unbound_entries} would "
-                     f"NOT bind — gate will block")
+                     f"NOT bind — the gate will block those entries")
     return line
 
 

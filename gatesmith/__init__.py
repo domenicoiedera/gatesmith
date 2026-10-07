@@ -13,6 +13,6 @@ Four fail-closed gates you can wrap around any agent's work:
 Zero dependencies, Python 3.10+ standard library only.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]
