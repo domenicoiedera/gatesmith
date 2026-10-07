@@ -30,8 +30,14 @@ def main(argv=None):
     args._config = config.load(args.config) if args.config else {}
     try:
         return args.fn(args)
+    except review.UsageError as exc:
+        print(f"gatesmith: usage error — {exc}", file=sys.stderr)
+        return 2
     except store.RegistryError as exc:
         print(f"gatesmith: unreadable registry — {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"gatesmith: I/O error — {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         return 130

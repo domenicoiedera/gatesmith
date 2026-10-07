@@ -24,13 +24,18 @@ runs after the outcome is already decided.
 
 - `open` records who is executing the change.
 - `sign` rejects a reviewer equal to the executor.
-- `gate` exits 0 only when a pass exists *and* the reviewer differs from the
-  executor. Everything else — no signoff, a block, a closed review, a caller
-  who is not the declared executor — exits non-zero.
+- `gate` exits 0 only when a pass exists, the reviewer differs from the
+  executor, and the chain head is covered by a **seal** that verifies against a
+  trust anchor supplied from *outside* the repo. Everything else — no signoff, a
+  block, a closed review, a caller who is not the declared executor, a missing
+  or non-verifying seal — exits non-zero. A registry that was never sealed is
+  blocked by default; `--allow-unsealed` is the explicit, loud opt-out.
 
 The gate has no opinion about who the reviewer is. It can be a second agent, a
 human, or a different role in the same organisation. What it cannot be is the
-author.
+author. The seal does not decide who the reviewer is either: it binds the
+signing key's principal to the claimed reviewer, and proves the record has not
+been altered since — never that the review happened or was any good.
 
 ## The receipt
 

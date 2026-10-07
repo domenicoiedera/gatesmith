@@ -33,13 +33,19 @@ gatesmith review open --id bump-deps --executor claude --change "bump deps" --ti
 # An independent reviewer must sign. The executor signing its own work fails.
 gatesmith review sign --id bump-deps --reviewer human --verdict pass
 
-# Wrap the push/deploy/migrate step. Exit 0 only on an independent pass.
-gatesmith review gate --id bump-deps --target deploy --executor claude
+# Wrap the push/deploy/migrate step. Exit 0 only on an independent, sealed pass.
+gatesmith review seal --key ~/.ssh/reviewer_key
+gatesmith review gate --id bump-deps --target deploy --executor claude \
+  --allowed-signers /outside/the/repo/reviewers
 ```
 
-`gate` exits 0 only when a pass exists and the reviewer differs from the
-executor. A missing signoff, a block, a closed review, or reviewer == executor
-all exit non-zero. Wire it into a hook or CI and the work stops at the door.
+`gate` exits 0 only when a pass exists, the reviewer differs from the executor,
+and the chain head is covered by a seal that verifies against a trust anchor you
+supply from **outside** the repo. A missing signoff, a block, a closed review,
+reviewer == executor, or a missing/!verifying seal all exit non-zero. A registry
+that was never sealed is blocked by default; `--allow-unsealed` is the explicit,
+loud opt-out that admits it on chain+signoff only. Wire it into a hook or CI and
+the work stops at the door.
 
 ## Install it into your agent
 

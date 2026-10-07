@@ -7,6 +7,50 @@ All notable changes are recorded here. The format follows
 Every release also notes the failures it exposed, because a release that taught
 us nothing is a release we did not verify.
 
+## [Unreleased]
+
+### Changed
+
+- **The review seal is now REQUIRED by default at the gate.** `review gate`
+  exits 1 when the registry is unsealed or its seal does not verify. The only
+  way to admit an unsealed registry is the explicit `--allow-unsealed`, which
+  prints a loud warning naming the residual risk.
+- One exit taxonomy across the verbs (D5): `gate` — 1 on a chain/structure/legacy
+  integrity failure or a missing/non-verifying seal, 2 on a malformed registry
+  shape (clean message, never a traceback); `verify` — 1 on a failed chain/seal
+  or a missing seal, 2 on an unreadable registry/anchor; `seal` — 0/2;
+  `status`/`list`/`lookup` are informational and always 0.
+- `status`/`list`/`lookup` name the seal state explicitly and never print a bare
+  `GATE: OPEN` — a stale seal reads `UNSEALED — NOT ENFORCED`.
+- The trust-anchor warning is computed from the **anchor's own** location, so a
+  repo-internal anchor is warned about even when the registry lives outside
+  every repo.
+- Every `ssh-keygen` call carries a 30s timeout; a hung tool is exit 2, not a
+  hang. Seal sidecar I/O is fail-closed: any `OSError` is exit 2 with a message.
+- The signed preimage uses a normalized registry path (`./reg.json` and
+  `reg.json` produce the same preimage). Leading-dash paths are rejected before
+  they reach argv.
+- `tools/mutation_check.py` ships with the tree: it disables each load-bearing
+  guard in turn and asserts its test goes RED, restoring byte-identically.
+
+### Failures this release exposed
+
+- The wave-1 gate was **fail-open against the adversary it exists to stop**:
+  `_enforce_seal` admitted whenever `<registry>.sig` was absent, so a
+  write-capable executor self-approved by never sealing — or by deleting the
+  sidecar. A three-entry registry with a forged last entry and a deleted sidecar
+  was admitted (exit 0). The seal is now required by default.
+- `status` printed `GATE: OPEN` from signoff strings alone while `gate` blocked
+  on the same registry — a false admitted oracle. Its text now names the seal
+  state.
+- The anchor warning was skipped whenever the registry sat outside any git tree,
+  so a repo-writable anchor could pass unremarked. It is now derived from the
+  anchor's location.
+- `gate` caught only `ChainBrokenError`, so a structure/legacy failure exited 2
+  instead of the documented 1; paths beginning with `-` reached `ssh-keygen` as
+  options; no subprocess had a timeout; and a seal I/O error raised an uncaught
+  `OSError` (exit 1, contradicting the documented 2). All fixed.
+
 ## [0.1.0] - 2026-10-02
 
 ### Added

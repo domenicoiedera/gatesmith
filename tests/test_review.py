@@ -72,9 +72,13 @@ class ReviewGateTest(unittest.TestCase):
     def test_independent_pass_opens_gate(self):
         self.run_("open", "--id", "r1", "--executor", "backend", "--change", "x")
         self.run_("sign", "--id", "r1", "--reviewer", "reviewer1", "--verdict", "pass")
-        r = self.run_("gate", "--id", "r1", "--target", "deploy", "--executor", "backend")
+        # D1: the seal is required by default; this fixture is unsealed, so it
+        # must opt out explicitly — and the opt-out is loud.
+        r = self.run_("gate", "--id", "r1", "--target", "deploy", "--executor", "backend",
+                      "--allow-unsealed")
         self.assertEqual(r.returncode, 0)
         self.assertIn("GATE-OPEN", r.stdout)
+        self.assertIn("the seal was NOT enforced", r.stderr)
 
     def test_gate_rejects_wrong_executor_caller(self):
         self.run_("open", "--id", "r1", "--executor", "backend", "--change", "x")
@@ -137,7 +141,8 @@ class ReviewGateTest(unittest.TestCase):
         r = self.run_("sign", "--id", "rA2", "--reviewer", "rev2", "--verdict", "pass", "--auto")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("byte-identical", r.stdout)
-        gate = self.run_("gate", "--id", "rA2", "--target", "push", "--executor", "frontend")
+        gate = self.run_("gate", "--id", "rA2", "--target", "push", "--executor", "frontend",
+                         "--allow-unsealed")   # D1: unsealed fixture opts out explicitly
         self.assertEqual(gate.returncode, 0)
         self.assertIn("GATE-OPEN", gate.stdout)
 
@@ -174,8 +179,13 @@ class ReviewGateTest(unittest.TestCase):
     def test_lookup_finds_and_misses(self):
         self.run_("open", "--id", "rA", "--executor", "backend", "--change", "x",
                   "--tier", "A", "--diff-sha", SHA1)
-        self.assertEqual(self.run_("lookup", "--diff-sha", SHA1).returncode, 0)
-        self.assertEqual(self.run_("lookup", "--diff-sha", SHA2).returncode, 1)
+        # D5: `lookup` is informational and always exits 0.
+        found = self.run_("lookup", "--diff-sha", SHA1)
+        self.assertEqual(found.returncode, 0)
+        self.assertIn("rA", found.stdout)
+        miss = self.run_("lookup", "--diff-sha", SHA2)
+        self.assertEqual(miss.returncode, 0)
+        self.assertIn("no gates with diff_sha", miss.stdout)
 
 
 if __name__ == "__main__":

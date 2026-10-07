@@ -153,12 +153,15 @@ class ChainIntegrityTest(ChainSealBase):
             ("sign", "--id", "r1", "--reviewer", "rev1", "--verdict", "pass"),
             ("close", "--id", "r1", "--note", "n"),
             ("seal", "--key", self.path("no-key")),
-            ("verify", "--allowed-signers", self.path("no-anchor")),
         ]
         for verb in verbs:
             result = self.review(*verb)
             self.assertEqual(result.returncode, 2, (verb, result.stdout, result.stderr))
             self.assertIn("chain broken at entry 1", result.stderr, verb)
+        # `verify` is a verification verb: a chain failure is a block (1), per D5.
+        result = self.review("verify", "--allowed-signers", self.path("no-anchor"))
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertIn("chain broken at entry 1", result.stderr)
 
         # RED -> GREEN: restore the exact bytes; the digest is identical again.
         self.write_bytes(original)
@@ -322,19 +325,21 @@ class SealRoundTripTest(ChainSealBase):
         self.assertEqual(self.review("seal", "--key", rev1).returncode, 0)
         # green: round trip
         self.assertEqual(self.review("verify", "--allowed-signers", anchor).returncode, 0)
-        # red 1: tampered registry (entry 0 has a downstream entry, so the chain breaks)
+        # red 1: tampered registry — a chain failure at `verify` is a block (1), D5
         original = self.read_bytes()
         data = self.load()
         data["reviews"][0]["change"] = "tampered"
         self.dump(data)
-        self.assertEqual(self.review("verify", "--allowed-signers", anchor).returncode, 2)
+        result = self.review("verify", "--allowed-signers", anchor)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("chain broken", result.stderr)
         self.write_bytes(original)
         self.assertEqual(self.review("verify", "--allowed-signers", anchor).returncode, 0)
-        # red 2: missing .sig sidecar
+        # red 2: missing .sig sidecar — no seal present is a block (1), D5
         os.remove(self.path(self.REG + ".sig"))
         result = self.review("verify", "--allowed-signers", anchor)
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("signature sidecar", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("no seal present", result.stderr)
         # red 3: unreadable anchor (re-seal first, so this is the anchor at fault)
         self.assertEqual(self.review("seal", "--key", rev1).returncode, 0)
         result = self.review("verify", "--allowed-signers", self.path("absent-anchor"))

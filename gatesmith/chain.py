@@ -20,6 +20,14 @@ Pinned definitions (these are load-bearing; do not "simplify" them):
   ``prev_hash`` is a broken chain, never "legacy". A registry with no marker at
   all predates the chain and must be upgraded explicitly.
 
+Honesty — what a bare chain does NOT cover. Each entry stores only its
+predecessor's hash; the head hash is never written into the artifact. An
+**unsealed** chain therefore does not cover its own **last** entry: a
+write-capable actor can edit or drop the final entry and re-stamp, and the
+chain still verifies. That gap is exactly what the *required* seal closes (see
+:mod:`gatesmith.review`, decision D1, and :func:`gatesmith.seal.head_hash`), so
+a chain is only as strong as the seal the gate enforces.
+
 Nothing here touches :mod:`gatesmith.store`; the chain is scoped to the review
 registry only, so the other gates keep the plain JSON semantics they had.
 """
@@ -61,11 +69,6 @@ def head_hash(entries):
     """``sha256`` over the newline-joined per-entry hashes — the sealed value."""
     joined = "\n".join(entry_hash(entry) for entry in entries)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
-
-
-def chain_head(entries):
-    """The hash of the last canonical entry (the chain's head), or None if empty."""
-    return entry_hash(entries[-1]) if entries else None
 
 
 def stamp(entries):
