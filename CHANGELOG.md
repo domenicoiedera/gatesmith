@@ -7,7 +7,7 @@ All notable changes are recorded here. The format follows
 Every release also notes the failures it exposed, because a release that taught
 us nothing is a release we did not verify.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-08
 
 ### Changed
 
@@ -19,7 +19,8 @@ us nothing is a release we did not verify.
   integrity failure or a missing/non-verifying seal, 2 on a malformed registry
   shape (clean message, never a traceback); `verify` — 1 on a failed chain/seal
   or a missing seal, 2 on an unreadable registry/anchor; `seal` — 0/2;
-  `status`/`list`/`lookup` are informational and always 0.
+  `status`/`list`/`lookup` are informational — 0 when they can report, 2 when
+  the registry is unreadable or unparseable. They make no gate decision.
 - `status`/`list`/`lookup` name the seal state explicitly and never print a bare
   `GATE: OPEN` — a stale seal reads `UNSEALED — NOT ENFORCED`.
 - The trust-anchor warning is computed from the **anchor's own** location, so a
@@ -50,6 +51,13 @@ us nothing is a release we did not verify.
   instead of the documented 1; paths beginning with `-` reached `ssh-keygen` as
   options; no subprocess had a timeout; and a seal I/O error raised an uncaught
   `OSError` (exit 1, contradicting the documented 2). All fixed.
+- The informational verbs kept lying in subtler shapes after the first fix: a
+  `.sig` file that merely existed (with a matching digest) read as `sealed`; a
+  signature that validated but did not bind the named reviewer read as
+  `VERIFIED`; a verb that checked nothing still implied a verdict; and
+  `verify --signer` asserted "gate will block" from a narrowed principal set
+  while the unrestricted gate would admit. Each was found by an independent
+  adversary *after* the previous fix had passed its own tests.
 
 ## [0.1.0] - 2026-10-02
 

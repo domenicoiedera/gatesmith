@@ -210,7 +210,7 @@ def gate_granted(entry):
 
     A CLOSED review never gates (G11): closing is how a superseded review is
     retired, so ``status`` must agree with ``gate`` that it blocks. This is the
-    predicate the INFORMATIONAL verbs share; ``cmd_gate`` applies the same
+    predicate ``status`` shares with ``gate``; ``cmd_gate`` applies the same
     conditions inline (it must name the exact enforced reason with its own,
     longer messages), so the two are kept in step BY HAND — edit both together
     or they diverge.
@@ -284,7 +284,7 @@ def _seal_label(registry, entries, anchor, reviewers=None):
     ``VERIFIED``: otherwise ``list``/``lookup`` would report the gate's
     admit-condition minus its binding — the surviving G1 false-oracle variant
     (``status`` was fixed, these two were not). ``reviewers`` is the list of the
-    reported entries' reviewers (``None`` when the caller holds no entry).
+    held entries' reviewers (``None`` when the caller holds no entry).
     """
     outcome, detail, principals = _seal_verdict(registry, entries, None, anchor)
     if outcome == "verified":
@@ -322,6 +322,13 @@ def _seal_label(registry, entries, anchor, reviewers=None):
             return f"VERIFIED (principal={names}; {clause})"
         if noreview_note:
             return f"VERIFIED (principal={names}; {noreview_note})"
+        if not entries:
+            # A sealed registry with no entries at all: the seal verifies, but
+            # there is no review here to admit — say so rather than a bare
+            # VERIFIED. (`entries` is the whole registry, not the shown subset:
+            # a filtered/empty view must NOT claim the registry is empty.)
+            return (f"VERIFIED (principal={names}; no reviews in this registry "
+                    f"— nothing to admit)")
         return f"VERIFIED (principal={names})"
     if outcome == "none":
         return "none"
@@ -662,22 +669,35 @@ def _binding_scope(entries, principals):
     return len(entries), unbound
 
 
-def _verify_scope_line(principals, entries):
+def _verify_scope_line(principals, entries, signer=None):
     """The F13 scope line: chain+seal result, admission explicitly NOT evaluated.
 
     ``verify`` answers the chain+seal question only — it does not apply the
     gate's reviewer-binding / signoff checks — so the line must never read as an
     admission decision. It names that scope, and when the registry holds entries
-    the seal would NOT bind it says how many and that the gate will block, so a
-    caller cannot mistake the ``0`` for a green light.
+    the seal would NOT bind it says how many, so a caller cannot mistake the
+    ``0`` for a green light.
+
+    ``signer`` narrows the principals ``verify`` validated, but the gate
+    evaluates ALL matched principals — so under ``--signer`` an absolute claim
+    "gate will block" would be false whenever the unrestricted gate would in
+    fact admit. In that case the clause names the restriction instead of
+    asserting the gate's verdict (a false block is still a false statement).
     """
     names = ", ".join(principals) if principals else "?"
     line = (f"chain: sound · seal: valid (principal={names}) · "
             f"ADMISSION: not evaluated — run 'gate'")
     total, unbound_entries = _binding_scope(entries, principals)
+    if not total:
+        return line + " · no reviews in this registry"
     if unbound_entries:
-        line += (f" · entries: {total}, of which {unbound_entries} would NOT "
-                 f"bind — gate will block")
+        if signer:
+            line += (f" · entries: {total}, of which {unbound_entries} would "
+                     f"NOT bind --signer '{signer}' (the gate evaluates all "
+                     f"matched principals)")
+        else:
+            line += (f" · entries: {total}, of which {unbound_entries} would "
+                     f"NOT bind — gate will block")
     return line
 
 
@@ -710,7 +730,7 @@ def cmd_verify(args):
         print(f"verify FAILED: cannot read seal input — {exc}", file=sys.stderr)
         return 2
     if code == 0:
-        print(_verify_scope_line(principals, reg.get("reviews", [])))
+        print(_verify_scope_line(principals, reg.get("reviews", []), args.signer))
         return 0
     print(f"verify FAILED: {detail}", file=sys.stderr)
     return code
