@@ -29,16 +29,15 @@ DEFAULT_SCHEMA = "gatesmith-worktree-audit/v1"
 def _git(repo, *argv):
     """Run git with an argv array — never a shell.
 
-    git prints paths it was given verbatim, so on a non-UTF-8 locale
-    (Windows runners default to the system code page) those bytes would
-    decode as garbage or raise. Git's own path-quoting (core.quotepath)
-    only affects its *display*; forcing UTF-8 on the pipe keeps every
-    path byte-exact on every OS.
+    Only the pipe encoding is pinned: on a non-UTF-8 locale (Windows runners
+    default to the system code page) git's output would otherwise decode as
+    garbage or raise. Everything else — including the system config that
+    decides line-ending normalization — must be exactly what the user's own
+    git sees, or this tool would disagree with it about what is clean.
     """
-    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C.UTF-8"}
     return subprocess.run(["git", "-C", str(repo), *argv],
                           capture_output=True, text=True, timeout=30, shell=False,
-                          encoding="utf-8", errors="strict", env=env)
+                          encoding="utf-8", errors="replace")
 
 
 def _parse_status_counts(porcelain):
