@@ -154,6 +154,7 @@ class WorktreeAuditTest(unittest.TestCase):
         self.assertNotIn("shell=True", inspect.getsource(wa))
 
     # ── report writing ────────────────────────────────────────────────────
+    @unittest.skipUnless(os.name == "posix", "POSIX file-mode semantics")
     def test_report_written_at_0600(self):
         rows = wa.audit(str(self.repo))
         out = self.tmp / "worktree-audit.json"
