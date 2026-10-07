@@ -85,8 +85,11 @@ class WorktreeAuditTest(unittest.TestCase):
     def test_dirty_and_clean_flags(self):
         rows = {r["path"]: r for r in wa.audit(str(self.repo))}
         clean_row = rows[str(self.wt_clean.resolve())]
-        self.assertTrue(clean_row["clean"],
-                        f"clean worktree reported dirty: {json.dumps(clean_row, ensure_ascii=False)}")
+        if not clean_row["clean"]:
+            raw = git(self.wt_clean, "status", "--porcelain").stdout
+            acr = git(self.wt_clean, "config", "--get", "core.autocrlf").stdout.strip()
+            self.fail(f"clean worktree reported dirty: row={json.dumps(clean_row)} "
+                      f"raw_status={raw!r} core.autocrlf={acr!r}")
         self.assertFalse(rows[str(self.wt_dirty.resolve())]["clean"])
         counts = rows[str(self.wt_dirty.resolve())]["status_counts"]
         self.assertGreaterEqual(counts.get("modified", 0), 1)
