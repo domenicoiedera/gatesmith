@@ -1,4 +1,14 @@
-name: Release (PyPI trusted publishing)
+name: Release
+
+# Tag a commit `v*` and this builds the distribution, runs the suite as a
+# release gate, attaches the sdist and wheel to the GitHub Release, and —
+# when PyPI publishing is switched on — uploads them to PyPI.
+#
+# PyPI publishing uses trusted publishing (OIDC): no token is ever stored.
+# It stays off until the repository variable PYPI_PUBLISH is set to "enabled",
+# which requires a pending publisher for this repository registered on PyPI
+# (project must match pyproject.toml). Until then the step is skipped rather
+# than failing, because a release that cannot publish is not a broken release.
 
 on:
   push:
@@ -14,7 +24,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Suite must pass before any release
-        run: python -m unittest discover -s tests -t . -v
+        run: |
+          python -m pip install .
+          python -m unittest discover -s tests -t . -v
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade build
@@ -24,12 +36,27 @@ jobs:
           name: dist
           path: dist/
 
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Attach the distribution to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
   publish:
     needs: build
+    if: vars.PYPI_PUBLISH == 'enabled'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      # OIDC for PyPI trusted publishing — no token is stored anywhere.
       id-token: write
     steps:
       - uses: actions/download-artifact@v4
