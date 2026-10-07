@@ -87,13 +87,14 @@ class ChainSealBase(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-m", "gatesmith", "review", "--registry", reg, *args],
             cwd=self.work, env=env or self.env, capture_output=True, shell=False,
-            encoding="utf-8", errors="replace")
+            encoding="utf-8", errors="replace", timeout=30)
 
     def key(self, name):
         priv = self.path(name)
         result = subprocess.run(
             ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", name + "@test", "-f", priv, "-q"],
-            capture_output=True, shell=False, encoding="utf-8", errors="replace")
+            stdin=subprocess.DEVNULL, capture_output=True, shell=False,
+            encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         return priv
 

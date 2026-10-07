@@ -65,7 +65,8 @@ def lane_by_id(reg, lane_id):
 
 
 def _git(repo, *argv):
-    return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True,
+                          timeout=30)
 
 
 def _uncommitted_in(repo):
@@ -74,7 +75,7 @@ def _uncommitted_in(repo):
         return set()
     try:
         out = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                             capture_output=True, text=True).stdout
+                             capture_output=True, text=True, timeout=30).stdout
     except Exception:
         return set()
     files = set()

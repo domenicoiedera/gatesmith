@@ -25,7 +25,8 @@ from gatesmith import worktree as wa  # noqa: E402
 
 
 def git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                          timeout=30)
 
 
 def make_repo(base, name):

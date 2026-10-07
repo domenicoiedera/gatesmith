@@ -196,24 +196,43 @@ def verify(registry_path, entries, allowed_signers, signer=None):
     return (0, "seal verified", matched)
 
 
-def sidecar_state(registry_path, entries):
-    """Anchor-free honesty state of the seal: ``'fresh'``/``'stale'``/``'absent'``.
+def inspect(registry_path, entries, allowed_signers=None, signer=None):
+    """Honest, anchor-aware seal state for a *reporting* verb (G1).
 
-    ``'fresh'`` means both sidecars exist and the recorded head still matches
-    the current chain — but this is NOT verification. Only the gate, given an
-    external anchor, can prove the signature. It exists so the informational
-    verbs (``status``/``list``/``lookup``) can name the seal state without
-    pretending to a decision they cannot make (D3, the false-oracle fix).
+    Returns ``(state, detail, principals)`` where ``state`` is one of:
+
+    * ``'none'``       — no ``.sig`` sidecar at all (nothing to enforce);
+    * ``'unverified'`` — a ``.sig`` exists but no trust anchor was supplied, so
+      NO verification ran — the reporting verb must say the seal was *not*
+      checked, never that it is "sealed";
+    * ``'verified'``   — ``ssh-keygen`` validated the signature against
+      ``allowed_signers``;
+    * ``'failed'``     — verification ran and did not succeed (checked-and-no);
+    * ``'error'``      — verification could not run (unreadable anchor, or
+      ``ssh-keygen`` unavailable).
+
+    This is the same cryptography the gate enforces (:func:`verify`); it is the
+    one source the informational verbs render, so none of them can claim a
+    verification it did not perform. ``'fresh'`` (a ``.sig`` present with a
+    matching ``.digest``) is deliberately NOT a state here: it is not
+    verification, and the old renderer that treated it as "sealed" was a false
+    oracle — a zero-byte signature satisfied it.
     """
     if not os.path.isfile(sig_path(registry_path)):
-        return "absent"
+        return ("none", "no seal present", [])
+    if not allowed_signers:
+        return ("unverified", "no --allowed-signers anchor supplied, so the seal "
+                              "was not verified", [])
     try:
-        with open(digest_path(registry_path), encoding="utf-8", errors="replace") as handle:
-            sealed = handle.read()
-    except OSError:
-        return "stale"
-    expected = preimage(chain.head_hash(entries), len(entries), registry_path)
-    return "fresh" if sealed == expected else "stale"
+        code, detail, principals = verify(registry_path, entries, allowed_signers,
+                                          signer=signer)
+    except OSError as exc:
+        return ("error", f"cannot read seal input — {exc}", [])
+    if code == 0:
+        return ("verified", detail, principals)
+    if code == 2:
+        return ("error", detail, principals)
+    return ("failed", detail, principals)
 
 
 def repo_root(start):

@@ -36,12 +36,21 @@ Exit codes (decision D5): 0 cleared / success, 1 blocked / failure, 2 usage or
 unreadable input, and one taxonomy across the verbs.
   * ``gate``   — 1 on any integrity failure (chain broken / structure / legacy)
     and on a missing or non-verifying seal; 2 on a malformed registry shape
-    (missing ``id``, wrong types) or usage — always a clean message, never a
-    traceback.
+    (missing ``id``, wrong types, ``reviews`` not a list) or usage — always a
+    clean message, never a traceback.
   * ``verify`` — 1 when the chain fails, no seal is present, or the seal does
     not verify; 2 on an unreadable registry/anchor or usage.
   * ``seal``   — 0 sealed; 2 cannot seal (no tool, I/O error, usage).
   * ``status`` / ``list`` / ``lookup`` — informational, always 0.
+
+One rule governs the informational verbs (G1): **a verb may only report the
+gate's decision if it re-derives it the same way the gate does — otherwise it
+must say it did not check.** ``status``/``list``/``lookup`` therefore never
+render a bare ``sealed``: a present-but-unchecked seal reads ``seal present,
+UNVERIFIED``, and only a real ``ssh-keygen -Y verify`` against a caller-supplied
+``--allowed-signers`` anchor can produce ``VERIFIED``. Before this rule a
+zero-byte ``.sig`` with a re-stamped ``.digest`` made ``status`` print
+``GATE: OPEN (sealed)`` while the gate blocked — a false oracle.
 """
 
 import datetime
@@ -54,7 +63,18 @@ DEFAULT_REGISTRY = "./review-registry.json"
 ALLOWED_TARGETS = {"push", "deploy", "migrate"}
 ALLOWED_TIERS = {"A", "B", "C"}
 ENTRY_REQUIRED = ("id", "executor", "change", "status")
-SIGNOFF_REQUIRED = ("reviewer", "verdict", "note", "at", "auto")
+FIELD_TYPES = {"id": str, "executor": str, "change": str, "status": str}
+SIGNOFF_TYPES = {
+    "reviewer": (str, type(None)),
+    "verdict": (str, type(None)),
+    "note": str,
+    "at": (str, type(None)),
+    "auto": bool,
+}
+# One honest sentence for "a seal is present but no anchor was supplied to
+# verify it" — a single source, so the reporting verbs and the gate agree.
+NO_ANCHOR_DETAIL = ("registry is sealed but no --allowed-signers trust anchor "
+                    "was supplied — the seal was not verified")
 
 
 class UsageError(Exception):
@@ -86,23 +106,48 @@ def _registry(args):
     return path
 
 
+def _check_reviews_container(reg):
+    """Reject a registry whose ``reviews`` is not a list of objects — exit 2.
+
+    A container-shape problem is a usage-class error (exit 2), not a
+    chain-integrity one (which is exit 1, G2). This runs BEFORE the chain walk
+    so the taxonomy is unambiguous: ``reviews`` present but not a list, or a
+    non-object entry, is shape; a chain that does not link up is integrity.
+    """
+    reviews = reg.get("reviews", [])
+    if not (isinstance(reviews, list)
+            and all(isinstance(entry, dict) for entry in reviews)):
+        raise MalformedRegistryError("registry 'reviews' must be a list of JSON objects")
+
+
 def _check_shape(reg):
     """Reject an entry the commands cannot read — exit 2, never a traceback.
 
-    The chain guarantees an entry is a JSON object; it does not guarantee the
-    fields a verb indexes. A missing ``id`` used to surface as a ``KeyError``
-    traceback; here it is a clean malformed-shape error.
+    Shape (missing field, wrong type, non-dict signoff) is a usage-class error
+    (exit 2), distinct from a chain-integrity break (exit 1). The chain already
+    guarantees each entry is a JSON object; this checks the fields a verb
+    indexes and their types, so a wrong-typed ``id`` is shape too.
     """
     for index, entry in enumerate(reg.get("reviews", [])):
         missing = [key for key in ENTRY_REQUIRED if key not in entry]
+        wrong = [key for key in ENTRY_REQUIRED
+                 if key in entry and not isinstance(entry[key], FIELD_TYPES[key])]
         signoff = entry.get("signoff")
         if not isinstance(signoff, dict):
             missing.append("signoff")
         else:
-            missing += [f"signoff.{key}" for key in SIGNOFF_REQUIRED if key not in signoff]
+            for key, expected in SIGNOFF_TYPES.items():
+                if key not in signoff:
+                    missing.append(f"signoff.{key}")
+                elif not isinstance(signoff[key], expected):
+                    wrong.append(f"signoff.{key}")
+        problems = []
         if missing:
-            raise MalformedRegistryError(
-                f"entry {index} is missing required field(s): {', '.join(missing)}")
+            problems.append("missing required field(s): " + ", ".join(missing))
+        if wrong:
+            problems.append("wrong type for: " + ", ".join(wrong))
+        if problems:
+            raise MalformedRegistryError(f"entry {index} is " + "; ".join(problems))
 
 
 def load_reg(path):
@@ -110,9 +155,10 @@ def load_reg(path):
 
     An absent or empty file is a fresh registry (nothing declared yet). A file
     that exists is verified as a v2 hash chain: a broken chain, a missing chain
-    field, or a pre-chain (marker-less) registry all raise, so no verb can read
-    a tampered chain as if it were sound. A structurally usable chain whose
-    entries are still the wrong shape raises :class:`MalformedRegistryError`.
+    field, or a pre-chain (marker-less) registry all raise (integrity → exit 1
+    at the gate), so no verb can read a tampered chain as if it were sound. A
+    structurally usable chain whose container/entries are the wrong shape raises
+    :class:`MalformedRegistryError` (shape → exit 2, G2).
     """
     present = bool(path) and os.path.exists(path) and os.path.getsize(path) > 0
     reg = store.load_json(path, {"gatesmith_registry": {"v": chain.CHAIN_VERSION},
@@ -121,6 +167,7 @@ def load_reg(path):
         reg.setdefault("gatesmith_registry", {"v": chain.CHAIN_VERSION})
         reg.setdefault("reviews", [])
         return reg
+    _check_reviews_container(reg)
     chain.verify_chain(reg)
     _check_shape(reg)
     return reg
@@ -159,13 +206,68 @@ def _block_reason(entry, signoff):
     return "not independently passed"
 
 
-def _seal_label(registry, entries):
-    """One-line seal state for the informational verbs (never a bare oracle)."""
-    return {
-        "fresh": "sealed",
-        "stale": "UNSEALED — NOT ENFORCED (stale seal)",
-        "absent": "UNSEALED — NOT ENFORCED (no seal)",
-    }[seal.sidecar_state(registry, entries)]
+def _seal_verdict(registry, entries, reviewer, anchor):
+    """The ONE seal decision, shared by the gate and the reporting verbs (G1).
+
+    Re-derives the gate's admission test through the gate's own code path: a
+    seal is admitted only when ``ssh-keygen`` validates its signature against
+    ``anchor`` AND the sealing principal binds ``reviewer``. Returns
+    ``(outcome, detail, principals)`` with ``outcome`` in ``{'none',
+    'unverified', 'verified', 'invalid', 'error'}``:
+
+    * ``'none'``       — no ``.sig`` sidecar (nothing to enforce);
+    * ``'unverified'`` — a seal exists but ``anchor`` was not supplied, so NO
+      verification ran; the gate fails closed on it, and a reporting verb must
+      say it did not check;
+    * ``'verified'``   — signature valid and, when ``reviewer`` is given,
+      principal-bound — the gate's admit verdict;
+    * ``'invalid'``    — verification ran and failed (checked-and-no) → gate 1;
+    * ``'error'``      — verification could not run (tool/anchor) → gate 2.
+
+    An informational verb reports the gate's decision only because it
+    re-derives it here, the same way the gate does.
+    """
+    state, detail, principals = seal.inspect(registry, entries, anchor)
+    if state == "none":
+        return ("none", "no seal — the registry is unsealed", principals)
+    if state == "unverified":
+        return ("unverified", NO_ANCHOR_DETAIL, principals)
+    if state == "verified":
+        if reviewer and reviewer not in principals:
+            return ("invalid",
+                    f"sealing principal {principals} != signoff.reviewer "
+                    f"'{reviewer}' — the seal does not bind this reviewer",
+                    principals)
+        return ("verified", detail, principals)
+    if state == "error":
+        return ("error", detail, principals)
+    return ("invalid", detail, principals)
+
+
+def _seal_label(registry, entries, anchor):
+    """Render ``seal: <state>`` honestly for the informational verbs (G1).
+
+    ``VERIFIED`` appears only after a real verification; a present-but-unchecked
+    seal reads ``present (UNVERIFIED …)`` — never a bare ``sealed``.
+    """
+    outcome, detail, principals = _seal_verdict(registry, entries, None, anchor)
+    if outcome == "verified":
+        names = ", ".join(principals) if principals else "?"
+        return f"VERIFIED (principal={names})"
+    if outcome == "none":
+        return "none"
+    if outcome == "unverified":
+        return "present (UNVERIFIED — pass --allowed-signers to verify)"
+    return f"FAILED ({detail})"
+
+
+def _print_seal_line(registry, entries, anchor):
+    """Emit the D4 anchor warning (if any) then the honest ``seal:`` line."""
+    if anchor:
+        warning = seal.trust_anchor_warning(anchor)
+        if warning:
+            print(warning, file=sys.stderr)
+    print(f"seal: {_seal_label(registry, entries, anchor)}")
 
 
 def cmd_open(args):
@@ -254,7 +356,14 @@ def cmd_sign(args):
 
 
 def cmd_status(args):
-    """Informational, always exit 0, and never a bare ``GATE: OPEN`` (D3)."""
+    """Informational, always exit 0, and never a bare ``GATE: OPEN`` (D3/G1).
+
+    The GATE line is one of ``BLOCKED: <reason>``, ``OPEN (seal VERIFIED)``,
+    ``OPEN (UNSEALED — NOT ENFORCED)`` or ``OPEN (seal present, UNVERIFIED)``.
+    It reports the gate's decision only when ``--allowed-signers`` is supplied,
+    because then it re-derives it through the gate's own :func:`_seal_verdict`;
+    without an anchor it says plainly that the seal was NOT verified.
+    """
     registry = _registry(args)
     reg = load_reg(registry)
     entry = review(reg, args.id)
@@ -272,10 +381,22 @@ def cmd_status(args):
         print(f"  note: {signoff['note']}")
     if not gate_granted(entry):
         print(f"  GATE: BLOCKED: {_block_reason(entry, signoff)}")
-    elif seal.sidecar_state(registry, reg.get("reviews", [])) == "fresh":
-        print("  GATE: OPEN (sealed)")
-    else:
+        return 0
+    anchor = getattr(args, "allowed_signers", None)
+    if anchor:
+        warning = seal.trust_anchor_warning(anchor)
+        if warning:
+            print(warning, file=sys.stderr)
+    outcome, detail, _ = _seal_verdict(registry, reg.get("reviews", []),
+                                       signoff.get("reviewer"), anchor)
+    if outcome == "verified":
+        print("  GATE: OPEN (seal VERIFIED)")
+    elif outcome == "none":
         print("  GATE: OPEN (UNSEALED — NOT ENFORCED)")
+    elif outcome == "unverified":
+        print("  GATE: OPEN (seal present, UNVERIFIED)")
+    else:
+        print(f"  GATE: BLOCKED: seal not verified — {detail}")
     return 0
 
 
@@ -284,10 +405,17 @@ def _enforce_seal(args, registry, entries, signoff):
 
     By default the seal is REQUIRED (D1): the actor being governed never
     decides whether evidence is required, so a missing seal — or one that does
-    not verify — blocks with 1. ``--allow-unsealed`` is the only way to admit
-    an unsealed registry, and it prints a loud warning naming the residual risk.
+    not verify — blocks with 1. The verification itself (and the principal
+    binding) lives in :func:`_seal_verdict`, the same decision the reporting
+    verbs use, so ``gate`` and ``status`` can never disagree about the seal.
+    ``--allow-unsealed`` is the only way to admit a registry that has NO seal,
+    and it prints a loud warning naming the residual risk; it does NOT skip the
+    verification of a seal that IS present.
     """
-    has_seal = os.path.exists(seal.sig_path(registry))
+    anchor = getattr(args, "allowed_signers", None)
+    outcome, detail, principals = _seal_verdict(
+        registry, entries, signoff.get("reviewer"), anchor)
+    has_seal = outcome != "none"
     allow_unsealed = getattr(args, "allow_unsealed", False)
     if not has_seal and not allow_unsealed:
         print("GATE-BLOCKED: no seal — the registry is unsealed. Evidence must be "
@@ -302,30 +430,20 @@ def _enforce_seal(args, registry, entries, signoff):
               "last entry undetected — this is the documented residual risk of "
               "--allow-unsealed.", file=sys.stderr)
         return None
-    anchor = getattr(args, "allowed_signers", None)
-    if not anchor:
+    if anchor:
+        warning = seal.trust_anchor_warning(anchor)
+        if warning:
+            print(warning, file=sys.stderr)
+    if outcome == "unverified":
         print("GATE-BLOCKED: registry is sealed but no --allowed-signers trust "
               "anchor was supplied — the seal cannot be verified (failing closed).",
               file=sys.stderr)
         return 1
-    warning = seal.trust_anchor_warning(anchor)
-    if warning:
-        print(warning, file=sys.stderr)
-    try:
-        code, detail, principals = seal.verify(registry, entries, anchor)
-    except OSError as exc:
-        print(f"GATE-BLOCKED: cannot read seal input — {exc}", file=sys.stderr)
-        return 2
-    if code == 2:
+    if outcome == "error":
         print(f"GATE-BLOCKED: the seal cannot be verified — {detail}", file=sys.stderr)
         return 2
-    if code != 0:
+    if outcome == "invalid":
         print(f"GATE-BLOCKED: seal verification failed — {detail}", file=sys.stderr)
-        return 1
-    if signoff["reviewer"] not in principals:
-        print(f"GATE-BLOCKED: sealing principal {principals} != signoff.reviewer "
-              f"'{signoff['reviewer']}' — the seal does not bind this reviewer.",
-              file=sys.stderr)
         return 1
     return None
 
@@ -385,7 +503,7 @@ def cmd_list(args):
         print(f"{entry['id']}: [{entry['status']}] tier={entry.get('tier', 'C')} "
               f"executor={entry['executor']} "
               f"signoff={signoff['verdict']}/{signoff['reviewer'] or '-'} — {entry['change']}")
-    print(f"seal: {_seal_label(registry, entries)}")
+    _print_seal_line(registry, entries, getattr(args, "allowed_signers", None))
     return 0
 
 
@@ -408,7 +526,7 @@ def cmd_close(args):
 
 
 def cmd_lookup(args):
-    """Informational, always exit 0 (D5); names the seal state (D3)."""
+    """Informational, always exit 0 (D5); names the seal state honestly (G1)."""
     registry = _registry(args)
     reg = load_reg(registry)
     entries = reg.get("reviews", [])
@@ -420,7 +538,7 @@ def cmd_lookup(args):
         print(f"{entry['id']}: [{entry['status']}] tier={entry.get('tier', 'C')} "
               f"verdict={signoff['verdict']} reviewer={signoff['reviewer'] or '-'} "
               f"at={signoff['at']}")
-    print(f"seal: {_seal_label(registry, entries)}")
+    _print_seal_line(registry, entries, getattr(args, "allowed_signers", None))
     return 0
 
 
@@ -487,6 +605,10 @@ def add_parser(subparsers):
 
     p = sub.add_parser("status")
     p.add_argument("--id", required=True)
+    p.add_argument("--allowed-signers", metavar="PATH", dest="allowed_signers",
+                   help="OPTIONAL trust anchor; when supplied, status re-derives the "
+                        "gate's seal decision with it (VERIFIED / BLOCKED). Without it, "
+                        "status reports the seal as UNVERIFIED — it does not check it")
     p.set_defaults(fn=cmd_status)
 
     p = sub.add_parser("gate")
@@ -498,12 +620,16 @@ def add_parser(subparsers):
                         "an anchor that resolves inside a git working tree is WARNED about, "
                         "not prevented")
     p.add_argument("--allow-unsealed", action="store_true", default=False,
-                   help="DANGER: admit an unsealed registry on chain+signoff only; "
-                        "prints a loud warning and skips the seal entirely")
+                   help="DANGER: admit a registry that has NO seal, on chain+signoff only; "
+                        "a PRESENT seal is still verified and can still block. Prints a "
+                        "loud warning naming the residual risk it accepts")
     p.set_defaults(fn=cmd_gate)
 
     p = sub.add_parser("list")
     p.add_argument("--all", action="store_true")
+    p.add_argument("--allowed-signers", metavar="PATH", dest="allowed_signers",
+                   help="OPTIONAL trust anchor; when supplied, list verifies the seal with "
+                        "it and reports VERIFIED / FAILED, else present (UNVERIFIED)")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("close")
@@ -514,6 +640,9 @@ def add_parser(subparsers):
 
     p = sub.add_parser("lookup")
     p.add_argument("--diff-sha", required=True)
+    p.add_argument("--allowed-signers", metavar="PATH", dest="allowed_signers",
+                   help="OPTIONAL trust anchor; when supplied, lookup verifies the seal "
+                        "with it and reports VERIFIED / FAILED, else present (UNVERIFIED)")
     p.set_defaults(fn=cmd_lookup)
 
     p = sub.add_parser("seal")

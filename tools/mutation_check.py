@@ -9,9 +9,16 @@ decoration.
 
 Run:  python3.12 tools/mutation_check.py
 
-Requires ``ssh-keygen`` on PATH (two of the three target tests seal). Exits 0
-only when every guard goes RED when disabled and GREEN, byte-identical, when
-restored.
+Guards covered (G7 extends the original three with the round-2 two):
+
+  * chain-break detection            (tests.test_chain_seal, A1)
+  * principal binding                (tests.test_chain_seal, A4)
+  * seal requirement (D1)            (tests.test_attacks, F1)
+  * informational seal honesty (G1)  (tests.test_attacks, G1)  <- NEW in round 2
+  * shape->2 vs integrity->1 (G2)    (tests.test_attacks, G2)  <- NEW in round 2
+
+Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
+every guard goes RED when disabled and GREEN, byte-identical, when restored.
 """
 
 import hashlib
@@ -34,8 +41,8 @@ MUTATIONS = [
     (
         "principal binding",
         "gatesmith/review.py",
-        '    if signoff["reviewer"] not in principals:',
-        '    if False:  # MUTATION: principal binding disabled',
+        '        if reviewer and reviewer not in principals:',
+        '        if False:  # MUTATION: principal binding disabled',
         "tests.test_chain_seal.GateEnforcementTest.test_A4_principal_binding",
     ),
     (
@@ -44,6 +51,24 @@ MUTATIONS = [
         '    if not has_seal and not allow_unsealed:',
         '    if False:  # MUTATION: seal requirement disabled',
         "tests.test_attacks.SealRequiredTest.test_F1_executor_never_seals_is_blocked",
+    ),
+    (
+        "informational seal honesty (G1)",
+        "gatesmith/review.py",
+        '        return ("unverified", NO_ANCHOR_DETAIL, principals)',
+        '        return ("verified", NO_ANCHOR_DETAIL, principals)'
+        '  # MUTATION: informational seal honesty disabled',
+        "tests.test_attacks.InformationalSealTest."
+        "test_G1_unverified_seal_is_not_reported_as_verified",
+    ),
+    (
+        "shape->2 vs integrity->1 (G2)",
+        "gatesmith/review.py",
+        '        raise MalformedRegistryError("registry \'reviews\' must be a list of '
+        'JSON objects")',
+        '        pass  # MUTATION: shape->2 taxonomy disabled',
+        "tests.test_attacks.ExitTaxonomyTest."
+        "test_G2_malformed_shapes_exit_2_and_never_0",
     ),
 ]
 
@@ -58,7 +83,7 @@ def run_test(test_id):
     return subprocess.run(
         [sys.executable, "-m", "unittest", "-v", test_id],
         cwd=ROOT, env=env, capture_output=True, shell=False,
-        encoding="utf-8", errors="replace")
+        encoding="utf-8", errors="replace", timeout=30)
 
 
 def main():

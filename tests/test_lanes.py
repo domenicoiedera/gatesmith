@@ -26,7 +26,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def sh(*args, **kw):
     env = dict(os.environ)
     env["PYTHONPATH"] = ROOT + os.pathsep + env.get("PYTHONPATH", "")
-    return subprocess.run(args, capture_output=True, text=True, env=env, **kw)
+    return subprocess.run(args, capture_output=True, text=True, env=env,
+                          timeout=kw.pop("timeout", 30), **kw)
 
 
 def git(repo, *args):

@@ -122,7 +122,8 @@ class HitlClassification(unittest.TestCase):
 
 
 def git(repo, *args):
-    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
+                          timeout=30)
 
 
 class EvidenceCli(unittest.TestCase):
@@ -160,7 +161,7 @@ class EvidenceCli(unittest.TestCase):
             [sys.executable, "-m", "gatesmith", "evidence",
              "--repo", self.repo, "--base", "base", "--branch", "feature",
              "--registry", self.registry, *extra],
-            capture_output=True, text=True, env=env)
+            capture_output=True, text=True, env=env, timeout=30)
 
     def test_frozen_change_blocks(self):
         blocked = self.run_("--owned", "app.py")

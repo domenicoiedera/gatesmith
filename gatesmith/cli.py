@@ -13,8 +13,23 @@ from . import __version__, config, evidence, frozen, lanes, review, store
 GATES = (review, evidence, lanes, frozen)
 
 
+class _NoAbbrevParser(argparse.ArgumentParser):
+    """An ArgumentParser that refuses option prefixes (G4).
+
+    ``argparse`` otherwise accepts any unambiguous prefix, so ``--allow-u`` would
+    silently enable the DANGER flag ``--allow-unsealed``. Because
+    ``add_subparsers`` defaults ``parser_class`` to ``type(self)``, using this
+    class for the root parser makes every gate and sub-verb parser inherit the
+    rule — a danger flag is never reachable by a typo.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(
+    parser = _NoAbbrevParser(
         prog="gatesmith",
         description="Fail-closed verification gates for AI coding agents.")
     parser.add_argument("--version", action="version", version=f"gatesmith {__version__}")

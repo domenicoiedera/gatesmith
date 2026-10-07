@@ -20,7 +20,8 @@ SHA2 = "b" * 64
 def sh(*args, **kw):
     env = dict(os.environ)
     env["PYTHONPATH"] = ROOT + os.pathsep + env.get("PYTHONPATH", "")
-    return subprocess.run(args, capture_output=True, text=True, env=env, **kw)
+    return subprocess.run(args, capture_output=True, text=True, env=env,
+                          timeout=kw.pop("timeout", 30), **kw)
 
 
 class ReviewGateTest(unittest.TestCase):

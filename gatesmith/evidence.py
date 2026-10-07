@@ -93,7 +93,8 @@ def load_markers(path):
 
 
 def git(repo, *argv):
-    return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True,
+                          timeout=30)
 
 
 def _parse_owned(raw):

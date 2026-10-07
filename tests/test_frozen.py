@@ -53,7 +53,7 @@ class FrozenCli(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-m", "gatesmith", "frozen", "--registry", self.registry,
              "check", *paths],
-            capture_output=True, text=True, env=env)
+            capture_output=True, text=True, env=env, timeout=30)
 
     def _write(self, payload):
         with open(self.registry, "w") as fh:
