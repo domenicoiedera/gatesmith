@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gatesmith review list | grep -q ':' && { echo 'gatesmith: unsigned or blocked reviews remain — sign them, or close them with a reason, before stopping'; exit 2; } || true"
+          }
+        ]
+      }
+    ]
+  }
+}

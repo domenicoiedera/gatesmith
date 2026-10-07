@@ -1,0 +1,27 @@
+# Sample gatesmith.yaml — optional shared defaults for a team.
+#
+# Pass it with:  gatesmith --config gatesmith.yaml <gate> ...
+# A flag on the command line always wins over the value here, and if this file
+# is absent or malformed the built-in defaults are used. The parsed subset is
+# intentionally tiny: flat two-level maps, scalars, and inline lists.
+review:
+  # where signed reviews are recorded
+  registry: .gatesmith/review-registry.json
+
+evidence:
+  # frozen-paths registry checked by the runbook
+  registry: .gatesmith/frozen-registry.json
+  # opt-in: one regex per line, scanned against added lines (uncomment to use)
+  # markers_file: .gatesmith/markers.txt
+  # prose paths kept out of the auto-advance scan
+  report_path_regex: "(^|/)(docs|reports)/|\\.(md|markdown|rst)$"
+
+lanes:
+  # active lane records
+  registry: .gatesmith/lane-registry.json
+  # frozen-paths registry checked before a lane claims a file
+  frozen_registry: .gatesmith/frozen-registry.json
+
+frozen:
+  # frozen-paths registry checked by `gatesmith frozen check`
+  registry: .gatesmith/frozen-registry.json

@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# gatesmith's own defaults, when you run it on this repo
+review-registry.json
+lane-registry.json
+worktree-audit.json

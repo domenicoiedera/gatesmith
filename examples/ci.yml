@@ -1,0 +1,41 @@
+# Run gatesmith's own gates on a pull request, and prove the package on the
+# matrix it claims to support. Nothing here depends on a hosted service.
+name: gatesmith
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: tests (${{ matrix.python }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the suite
+        run: python -m unittest discover -s tests -t .
+
+  gates:
+    name: gatesmith on this repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gatesmith
+      - name: Frozen paths
+        run: git diff --name-only "origin/${{ github.base_ref || 'main' }}...HEAD" | xargs -r gatesmith frozen check
+      - name: Evidence
+        run: gatesmith evidence --repo . --base "origin/${{ github.base_ref || 'main' }}" --branch HEAD --owned "gatesmith/" --owned "tests/"

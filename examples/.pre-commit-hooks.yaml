@@ -1,0 +1,19 @@
+# pre-commit hook definition. Point `repo:` at this project and use these ids.
+#   - repo: <this project>
+#     rev: v0.1.0
+#     hooks:
+#       - id: gatesmith-frozen
+#       - id: gatesmith-no-auto-advance
+- id: gatesmith-frozen
+  name: gatesmith frozen paths
+  description: Block a commit that touches a path only its owner may change.
+  entry: gatesmith frozen check
+  language: python
+  pass_filenames: true
+
+- id: gatesmith-no-auto-advance
+  name: gatesmith no auto-advance
+  description: Block an added line that would advance work without a human.
+  entry: gatesmith evidence --repo . --base HEAD~1 --branch HEAD --owned
+  language: python
+  pass_filenames: false
