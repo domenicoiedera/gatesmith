@@ -10,7 +10,7 @@ decoration.
 Run:  python3.12 tools/mutation_check.py
 
 Guards covered (G7 extends the original three with the round-2 two; G15 adds the
-round-3 three):
+round-3 three; round 4 adds the F13/F14 two):
 
   * chain-break detection            (tests.test_chain_seal, A1)
   * principal binding                (tests.test_chain_seal, A4)
@@ -20,6 +20,8 @@ round-3 three):
   * principal-binding threading (G9) (tests.test_attacks, G9)  <- NEW in round 3
   * closed-status blocking (G11)     (tests.test_attacks, G11) <- NEW in round 3
   * timeout -> exit 2 mapping (G10)  (tests.test_attacks, G10) <- NEW in round 3
+  * verify scope honesty (F13)       (tests.test_attacks, F13) <- NEW in round 4
+  * empty-reviewer unbindable (F14)  (tests.test_attacks, F14) <- NEW in round 4
 
 Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
 every guard goes RED when disabled and GREEN, byte-identical, when restored.
@@ -98,6 +100,22 @@ MUTATIONS = [
         '        raise  # MUTATION: timeout mapping disabled',
         "tests.test_attacks.GitTimeoutTest."
         "test_G10_a_hung_git_is_a_hard_error_exit_2_never_a_traceback",
+    ),
+    (
+        "verify scope honesty (F13)",
+        "gatesmith/review.py",
+        '    if unbound_entries:',
+        '    if False:  # MUTATION: verify binding-count honesty disabled',
+        "tests.test_attacks.VerifyScopeTest."
+        "test_F13_verify_states_scope_and_the_unbound_binding",
+    ),
+    (
+        "empty-reviewer unbindable (F14)",
+        "gatesmith/review.py",
+        '        noreview = len(held) - len(known)',
+        '        noreview = 0  # MUTATION: empty-reviewer unbindable rule disabled',
+        "tests.test_attacks.EmptyReviewerTest."
+        "test_F14_empty_reviewer_entry_is_unbindable_not_bare_verified",
     ),
 ]
 

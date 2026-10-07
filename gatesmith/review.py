@@ -20,7 +20,7 @@ Commands
   close  --id ID --note TEXT [--by ROLE]
   lookup --diff-sha SHA
   seal   --key PRIVATE_KEY
-  verify --allowed-signers PATH [--signer PRINCIPAL]
+  verify --allowed-signers PATH [--signer PRINCIPAL]   (chain + seal ONLY)
 
 The registry is hash-chained (see :mod:`gatesmith.chain`): every verb verifies
 the chain before it reads, and a broken chain is a hard error. ``gate`` REQUIRES
@@ -31,6 +31,15 @@ no seal, or a seal that does not verify, is **blocked**; ``--allow-unsealed`` is
 the explicit, loud opt-out that names the residual risk. ``seal`` and ``verify``
 use the optional ``ssh-keygen``. New flags here are CLI-only in this wave —
 there is no ``gatesmith.yaml`` wiring.
+
+``verify`` answers a NARROW question: is the hash chain sound, and does the
+detached seal validate against the anchor (restricted to ``--signer`` when
+given)? It does **not** evaluate admission — it never applies the
+reviewer/executor, pass-signoff, or principal→``reviewer`` binding that
+``gate`` enforces — so its ``0`` is NOT a green light to admit. Its output says
+so explicitly and, when the registry holds entries the seal would not bind,
+names how many. A caller wiring ``verify`` as an admission pre-check must run
+``gate`` for that decision.
 
 Exit codes (decisions D5, G12): one taxonomy per verb class, never a traceback.
   * DECISION verbs (``gate``, ``verify``) — 0 admitted/verified, 1 blocked. The
@@ -200,8 +209,11 @@ def gate_granted(entry):
     """The shared chain+signoff admission test (the seal lives elsewhere).
 
     A CLOSED review never gates (G11): closing is how a superseded review is
-    retired, so ``status`` must agree with ``gate`` that it blocks — sharing
-    this one predicate is what keeps them from diverging.
+    retired, so ``status`` must agree with ``gate`` that it blocks. This is the
+    predicate the INFORMATIONAL verbs share; ``cmd_gate`` applies the same
+    conditions inline (it must name the exact enforced reason with its own,
+    longer messages), so the two are kept in step BY HAND — edit both together
+    or they diverge.
     """
     if entry["status"] == "closed":
         return False
@@ -277,20 +289,40 @@ def _seal_label(registry, entries, anchor, reviewers=None):
     outcome, detail, principals = _seal_verdict(registry, entries, None, anchor)
     if outcome == "verified":
         names = ", ".join(principals) if principals else "?"
-        known = [reviewer for reviewer in (reviewers or []) if reviewer]
+        held = list(reviewers or [])
+        known = [reviewer for reviewer in held if reviewer]
+        # F14: an entry whose reviewer is absent/empty cannot be bound — the
+        # gate blocks it ("has no reviewer") whatever the seal proves — so such
+        # an entry may NEVER collapse to a bare `VERIFIED`. Render the
+        # unbindable clause and say the gate will block.
+        noreview = len(held) - len(known)
+        if noreview == 1:
+            noreview_note = "no reviewer on this entry to bind — gate will block"
+        elif noreview > 1:
+            noreview_note = (f"no reviewer on {noreview} entries to bind — "
+                             f"gate will block")
+        else:
+            noreview_note = None
         unbound = [reviewer for reviewer in known if reviewer not in principals]
-        if not known:
-            return f"VERIFIED (principal={names})"
-        if not unbound:
-            bound = ", ".join(dict.fromkeys(known))
-            return f"VERIFIED (principal={names}; binds reviewer {bound})"
-        missing = ", ".join(dict.fromkeys(unbound))
-        if len(known) == 1:
-            return (f"signature valid (principal={names}) — does NOT bind "
-                    f"reviewer '{missing}'")
-        return (f"signature valid (principal={names}) — binds "
-                f"{len(known) - len(unbound)} of {len(known)} shown reviewer(s); "
-                f"does NOT bind {missing}")
+        if unbound:
+            # A named reviewer the seal does not bind: never lead with VERIFIED.
+            missing = ", ".join(dict.fromkeys(unbound))
+            if len(known) == 1:
+                line = (f"signature valid (principal={names}) — does NOT bind "
+                        f"reviewer '{missing}'")
+            else:
+                line = (f"signature valid (principal={names}) — binds "
+                        f"{len(known) - len(unbound)} of {len(known)} held "
+                        f"reviewer(s); does NOT bind {missing}")
+            return f"{line}; {noreview_note}" if noreview_note else line
+        if known:
+            clause = f"binds reviewer {', '.join(dict.fromkeys(known))}"
+            if noreview_note:
+                clause = f"{clause}; {noreview_note}"
+            return f"VERIFIED (principal={names}; {clause})"
+        if noreview_note:
+            return f"VERIFIED (principal={names}; {noreview_note})"
+        return f"VERIFIED (principal={names})"
     if outcome == "none":
         return "none"
     if outcome == "unverified":
@@ -611,7 +643,56 @@ def cmd_seal(args):
     return 0
 
 
+def _binding_scope(entries, principals):
+    """How many held entries the seal would NOT bind (F13).
+
+    Returns ``(total, unbound)``. An entry counts as UNBOUND when its
+    ``signoff.reviewer`` is absent/empty (unbindable — the gate blocks it with
+    "has no reviewer") or names a principal outside ``principals``. This is the
+    same principal→``signoff.reviewer`` test the gate applies, so the count can
+    only ever be conservative.
+    """
+    entries = list(entries)
+    unbound = 0
+    for entry in entries:
+        signoff = entry.get("signoff")
+        reviewer = signoff.get("reviewer") if isinstance(signoff, dict) else None
+        if not reviewer or reviewer not in principals:
+            unbound += 1
+    return len(entries), unbound
+
+
+def _verify_scope_line(principals, entries):
+    """The F13 scope line: chain+seal result, admission explicitly NOT evaluated.
+
+    ``verify`` answers the chain+seal question only — it does not apply the
+    gate's reviewer-binding / signoff checks — so the line must never read as an
+    admission decision. It names that scope, and when the registry holds entries
+    the seal would NOT bind it says how many and that the gate will block, so a
+    caller cannot mistake the ``0`` for a green light.
+    """
+    names = ", ".join(principals) if principals else "?"
+    line = (f"chain: sound · seal: valid (principal={names}) · "
+            f"ADMISSION: not evaluated — run 'gate'")
+    total, unbound_entries = _binding_scope(entries, principals)
+    if unbound_entries:
+        line += (f" · entries: {total}, of which {unbound_entries} would NOT "
+                 f"bind — gate will block")
+    return line
+
+
 def cmd_verify(args):
+    """DECISION verb (0 verified / 1 failed / 2 could-not-check) — SEAL scope only.
+
+    ``verify`` answers the CHAIN + SEAL question: is the hash chain sound, and
+    does the detached seal validate against ``--allowed-signers`` (restricted to
+    ``--signer`` when given)? It does **not** evaluate admission: it never
+    applies the reviewer≠executor / pass-signoff / principal→``signoff.reviewer``
+    binding the ``gate`` enforces, so a ``0`` here is NOT a green light to
+    admit. The output says so (``ADMISSION: not evaluated — run 'gate'``) and,
+    when the registry holds entries the seal would not bind, names how many. The
+    exit codes are unchanged (0 chain+seal OK, 1 failed, 2 could-not-check).
+    """
     registry = _registry(args)
     try:
         reg = load_reg(registry)
@@ -629,7 +710,7 @@ def cmd_verify(args):
         print(f"verify FAILED: cannot read seal input — {exc}", file=sys.stderr)
         return 2
     if code == 0:
-        print(f"verify OK: chain sound; seal signed by {', '.join(principals)}")
+        print(_verify_scope_line(principals, reg.get("reviews", [])))
         return 0
     print(f"verify FAILED: {detail}", file=sys.stderr)
     return code
@@ -707,7 +788,9 @@ def add_parser(subparsers):
 
     p = sub.add_parser("verify")
     p.add_argument("--allowed-signers", required=True, metavar="PATH", dest="allowed_signers",
-                   help="trust anchor (allowed_signers file) supplied from outside the repo")
+                   help="trust anchor (allowed_signers file) supplied from outside the repo. "
+                        "verify checks the CHAIN and the SEAL only — it does NOT evaluate "
+                        "admission (reviewer binding, pass signoff); run 'gate' for that")
     p.add_argument("--signer", metavar="PRINCIPAL", default=None,
                    help="restrict verification to this principal")
     p.set_defaults(fn=cmd_verify)

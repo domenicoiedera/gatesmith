@@ -1,6 +1,7 @@
 """Permanent tests for the wave-1 fix round: the H1-H5 attacks, ported.
 
-Each method maps to an acceptance criterion F1-F9 (see the fix spec). They are
+Each method maps to an acceptance criterion F1-F14 / G1-G13 (see the fix
+specs). They are
 written to discriminate: ``tools/mutation_check.py`` proves each guard's test
 goes RED when that guard is disabled. No network; no private paths. Seal tests
 are guarded with ``@unittest.skipUnless(shutil.which("ssh-keygen"), ...)`` so a
@@ -662,6 +663,85 @@ class InformationalTaxonomyTest(AttackBase):
         self.assertNotIn("always 0", doc)
         self.assertIn("INFORMATIONAL", doc)
         self.assertIn("cannot be read", doc)
+
+
+# ── F13: `verify` states its scope; a 0 is not an admission decision ─────────
+class VerifyScopeTest(AttackBase):
+    """`verify` answers chain+seal only. For a registry whose reviewer the seal
+    does not bind, `gate` blocks (1) while `verify` still exits 0 — so its
+    OUTPUT must say admission was not evaluated and name how many held entries
+    would NOT bind, or a caller using `verify` as a pre-check reads a false
+    green. (F13.)"""
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_F13_verify_states_scope_and_the_unbound_binding(self):
+        rev1 = self.key("rev1")
+        anchor = self.allowed("real_allowed", "rev1", rev1)
+        self.assertEqual(self.gs("open", "--id", "r1", "--executor", "backend",
+                                 "--change", "x", "--diff-sha", "d1").returncode, 0)
+        self.assertEqual(self.gs("sign", "--id", "r1", "--reviewer", "rev2",
+                                 "--verdict", "pass").returncode, 0)
+        self.assertEqual(self.gs("seal", "--key", rev1).returncode, 0)
+        # the enforced gate blocks on the principal→reviewer binding...
+        gate = self.gs("gate", "--id", "r1", "--target", "push",
+                       "--allowed-signers", anchor)
+        self.assertEqual(gate.returncode, 1, (gate.stdout, gate.stderr))
+        self.assertIn("does not bind", gate.stderr)
+        # ...verify still exits 0 (chain+seal), but must NOT read as a green light
+        verified = self.gs("verify", "--allowed-signers", anchor)
+        self.assertEqual(verified.returncode, 0, (verified.stdout, verified.stderr))
+        self.assertIn("chain: sound", verified.stdout)
+        self.assertIn("seal: valid (principal=rev1)", verified.stdout)
+        self.assertIn("ADMISSION: not evaluated — run 'gate'", verified.stdout)
+        self.assertIn("entries: 1, of which 1 would NOT bind — gate will block",
+                      verified.stdout)
+        # never the old, admission-shaped "verify OK" line
+        self.assertNotIn("verify OK", verified.stdout)
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_F13_verify_scope_when_every_held_reviewer_is_bound(self):
+        rev1 = self.key("rev1")
+        anchor = self.allowed("real_allowed", "rev1", rev1)
+        self.open_sign(reviewer="rev1")                     # reviewer == principal
+        self.assertEqual(self.gs("seal", "--key", rev1).returncode, 0)
+        self.assertEqual(self.gs("gate", "--id", "r1", "--target", "push",
+                                 "--allowed-signers", anchor).returncode, 0)
+        verified = self.gs("verify", "--allowed-signers", anchor)
+        self.assertEqual(verified.returncode, 0, (verified.stdout, verified.stderr))
+        # still names the scope, but no "would NOT bind" clause when none would
+        self.assertIn("ADMISSION: not evaluated — run 'gate'", verified.stdout)
+        self.assertNotIn("would NOT bind", verified.stdout)
+
+
+# ── F14: an entry with no reviewer is UNBINDABLE, never a bare VERIFIED ───────
+class EmptyReviewerTest(AttackBase):
+    """`sign --reviewer ""` leaves the entry with no reviewer; `gate` blocks
+    ("has no reviewer"), so no reporting verb may print a bare
+    `seal: VERIFIED` for it — it must say there is no reviewer to bind and that
+    the gate will block. (F14.)"""
+
+    @unittest.skipUnless(HAS_SSH_KEYGEN, "ssh-keygen not available")
+    def test_F14_empty_reviewer_entry_is_unbindable_not_bare_verified(self):
+        rev1 = self.key("rev1")
+        anchor = self.allowed("real_allowed", "rev1", rev1)
+        self.assertEqual(self.gs("open", "--id", "r1", "--executor", "backend",
+                                 "--change", "x", "--diff-sha", "d1").returncode, 0)
+        self.assertEqual(self.gs("sign", "--id", "r1", "--reviewer", "",
+                                 "--verdict", "pass").returncode, 0)
+        self.assertEqual(self.gs("seal", "--key", rev1).returncode, 0)
+        gate = self.gs("gate", "--id", "r1", "--target", "push",
+                       "--allowed-signers", anchor)
+        self.assertEqual(gate.returncode, 1, (gate.stdout, gate.stderr))
+        self.assertIn("has no reviewer", gate.stderr)
+        for verb in (("list", "--all"), ("lookup", "--diff-sha", "d1")):
+            r = self.gs(*verb, "--allowed-signers", anchor)
+            self.assertEqual(r.returncode, 0, (verb, r.stdout, r.stderr))
+            lines = [ln for ln in r.stdout.splitlines() if ln.startswith("seal: ")]
+            self.assertEqual(len(lines), 1, (verb, r.stdout))
+            self.assertIn("no reviewer on this entry to bind — gate will block",
+                          lines[0], verb)
+            # the bare form the old renderer printed is gone
+            self.assertNotEqual(lines[0], "seal: VERIFIED (principal=rev1)", verb)
 
 
 if __name__ == "__main__":
