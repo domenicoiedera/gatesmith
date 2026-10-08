@@ -85,17 +85,33 @@ us nothing is a release we did not verify.
   **no timeout**, so a grandchild that inherited the pipe — `git` spawns such
   children (diff/textconv drivers, hooks, credential and `git-remote-*`
   helpers) — held the call ~5 s past a 0.50 s timeout, indefinitely if it never
-  exited. Emulated on POSIX the old shape returned at **5.02 s**; every
-  subprocess call (in `seal`, `evidence`, `lanes`, `worktree`) was vulnerable.
-  v0.1.0 shipped every call with no bound at all, and the round-3 timeouts
-  bounded the *direct child* without closing this. Fixed by routing every call
-  through a new `gatesmith/proc.py`, which kills the direct child and returns
-  **without draining** the pipes; F8's tight bound is restored on every platform
-  and a mutation guard (F18) falsifies the drain path. **Residual:** a killed
-  child's own grandchildren may survive the call — we no longer wait on them
-  (they are exactly the processes the OS would orphan anyway; the alternative,
-  draining, is what made the call unbounded). `evidence.py`/`lanes.py` also
-  gained the pinned UTF-8 encoding `worktree.py`/`seal.py` already had.
+  exited. v0.1.0 shipped every call with no bound at all, and the round-3
+  timeouts bounded the *direct child* without closing this.
+- **The first fix for it did not work on the platform that mattered, and the
+  emulation said it did.** Round 8 routed every call through a new
+  `gatesmith/proc.py` that killed the direct child and returned **without
+  draining** the pipes. Emulated on POSIX that returned in 0.50 s and passed
+  every local test — and real Windows CI still measured **5.05 s** in all four
+  jobs. Windows' `communicate()` implements its timeout with *reader threads*
+  that outlive the deadline while a grandchild holds the pipe, so the call
+  exceeded the bound before our kill ever ran: killing after the fact cannot
+  bound a call that has already blocked. The runner now enforces the deadline
+  itself — the pipes are drained on a daemon thread and the deadline is a
+  bounded thread join, which every platform honours — and on expiry it kills the
+  whole process **tree** (`taskkill /F /T` on Windows, `kill` elsewhere) so
+  nothing keeps the pipe open. F8's tight bound is restored on every platform,
+  with a mutation guard (F18) that drops the enforced bound and goes red.
+  **Residual:** on POSIX a killed child's own grandchildren may survive the call;
+  the child is dead and only an orphan remains (the same orphan `subprocess.run`
+  leaves). When the command itself has finished and only a stray descendant holds
+  the pipe, Windows — where `taskkill /T` reaches that descendant — returns the
+  real result instead of a false timeout; on POSIX that case reports a timeout.
+  `evidence.py`/`lanes.py` also gained the pinned UTF-8 encoding
+  `worktree.py`/`seal.py` already had.
+- **Twice in this release the platform, not the emulation, was the oracle.** The
+  code-page bug was found by CI after a clean macOS run; the subprocess bound was
+  found by CI after a clean emulated run claiming 0.50 s. Neither was reachable
+  from the machine the work was done on.
 
 ## [0.1.0] - 2026-10-02
 

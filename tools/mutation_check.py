@@ -146,10 +146,10 @@ MUTATIONS = [
         "test_F17_output_is_utf8_even_when_the_host_code_page_is_not",
     ),
     (
-        "kill-and-return on timeout (F18)",
+        "enforced bound on timeout (F18)",
         "gatesmith/proc.py",
-        '        process.wait()      # reap it so it does not linger as a zombie\n',
-        '        process.communicate()  # MUTATION: drain the pipes again after kill\n',
+        '    moved.wait(timeout)                         # OUR bound, honoured everywhere\n',
+        '    moved.wait()  # MUTATION: bound delegated to the drain thread again\n',
         "tests.test_attacks.TimeoutTest."
         "test_F8_slow_subprocess_is_a_usage_error_not_a_hang",
     ),
