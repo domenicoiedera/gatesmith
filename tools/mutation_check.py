@@ -25,6 +25,7 @@ round-3 three; round 4 adds the F13/F14 two):
   * verify --signer scope (F15)      (tests.test_attacks, F15) <- NEW in round 5
   * version single-source (F16)      (tests.test_attacks, F16) <- NEW in round 5
   * utf-8 output on any code page (F17) (tests.test_attacks, F17) <- NEW in round 7
+  * kill-and-return on timeout (F18) (tests.test_attacks, F8)  <- NEW in round 8
 
 Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
 every guard goes RED when disabled and GREEN, byte-identical, when restored.
@@ -143,6 +144,14 @@ MUTATIONS = [
         '            pass  # MUTATION: utf-8 output pin disabled',
         "tests.test_attacks.OutputEncodingTest."
         "test_F17_output_is_utf8_even_when_the_host_code_page_is_not",
+    ),
+    (
+        "kill-and-return on timeout (F18)",
+        "gatesmith/proc.py",
+        '        process.wait()      # reap it so it does not linger as a zombie\n',
+        '        process.communicate()  # MUTATION: drain the pipes again after kill\n',
+        "tests.test_attacks.TimeoutTest."
+        "test_F8_slow_subprocess_is_a_usage_error_not_a_hang",
     ),
 ]
 

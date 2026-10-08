@@ -36,7 +36,7 @@ import os
 import shutil
 import subprocess
 
-from . import chain
+from . import chain, proc
 
 NAMESPACE = "gatesmith"
 DIGEST_SUFFIX = ".digest"
@@ -83,13 +83,15 @@ def _leading_dash(path):
 def _run(argv, stdin=None):
     """Run ``ssh-keygen`` with an argv array — never a shell.
 
-    Only the text encoding and the timeout are pinned; the environment is left
-    exactly as the caller's so the tool sees the same PATH the user does. A
-    hung call raises :class:`subprocess.TimeoutExpired` for the caller to map to
-    a usage error (D8).
+    Delegates to :func:`gatesmith.proc.run`, which kills the direct child on
+    expiry and returns without draining its pipes (a grandchild that inherited
+    the stdout pipe cannot hold the call past its bound). Only the text encoding
+    and the timeout are pinned; the environment is left exactly as the caller's
+    so the tool sees the same PATH the user does. A hung call raises
+    :class:`subprocess.TimeoutExpired` for the caller to map to a usage error
+    (D8).
     """
-    return subprocess.run(argv, stdin=stdin, capture_output=True, shell=False,
-                          encoding="utf-8", errors="replace", timeout=SUB_TIMEOUT)
+    return proc.run(argv, stdin=stdin, timeout=SUB_TIMEOUT)
 
 
 def seal(registry_path, entries, key_path):

@@ -29,10 +29,9 @@ a silent CLEAR.
 
 import datetime
 import os
-import subprocess
 import sys
 
-from . import config, frozen, store, worktree
+from . import config, frozen, proc, store, worktree
 
 DEFAULT_REGISTRY = "./lane-registry.json"
 DEFAULT_FROZEN = "./FROZEN-registry.json"
@@ -68,8 +67,8 @@ def lane_by_id(reg, lane_id):
 
 
 def _git(repo, *argv):
-    return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True,
-                          timeout=GIT_TIMEOUT)
+    """A bounded ``git`` call routed through :func:`gatesmith.proc.run`."""
+    return proc.run(["git", "-C", repo, *argv], timeout=GIT_TIMEOUT)
 
 
 def _uncommitted_in(repo):
@@ -83,8 +82,8 @@ def _uncommitted_in(repo):
     if not os.path.isdir(repo):
         return set()
     try:
-        out = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                             capture_output=True, text=True, timeout=GIT_TIMEOUT).stdout
+        out = proc.run(["git", "-C", repo, "status", "--porcelain"],
+                       timeout=GIT_TIMEOUT).stdout
     except OSError:
         return set()
     files = set()

@@ -106,6 +106,36 @@ def write_slow_shim(shim_dir, interpreter, seconds=5):
     return shim
 
 
+def write_grandchild_shim(shim_dir, interpreter, seconds=5):
+    """Write an ``ssh-keygen`` shim whose GRANDCHILD holds the inherited pipe.
+
+    The DIRECT child is what a bounded runner kills on expiry; the background
+    grandchild is what ``subprocess.run``'s Windows branch then blocks on, in
+    ``communicate()`` with no timeout, until that grandchild releases the pipe
+    (H1). Portable: ``start /b`` plus a direct sleep on Windows (a ``.bat``); a
+    backgrounded ``sleep`` plus ``exec sleep`` on POSIX. Either way the pipe
+    stays open past the kill until ``seconds`` elapse, so a runner that DRAINS
+    the pipe returns at ~``seconds`` while one that kills-and-returns does not.
+    """
+    if os.name == "nt":
+        shim = os.path.join(shim_dir, "ssh-keygen.bat")
+        body = (
+            "@echo off\r\n"
+            f'start /b "" "{interpreter}" -c "import time; time.sleep({int(seconds)})"\r\n'
+            f'"{interpreter}" -c "import time; time.sleep({int(seconds)})"\r\n'
+        )
+    else:
+        shim = os.path.join(shim_dir, "ssh-keygen")
+        body = ("#!/bin/sh\n"
+                f"sleep {int(seconds)} &\n"        # grandchild inherits the pipe
+                f"exec sleep {int(seconds)}\n")    # direct child the kill reaches
+    with open(shim, "w", encoding="utf-8", newline="") as handle:
+        handle.write(body)
+    if os.name == "posix":                         # the exec bit is POSIX-only
+        os.chmod(shim, 0o755)
+    return shim
+
+
 # ── H1 / F1: the executor-never-seals attack ─────────────────────────────────
 class SealRequiredTest(AttackBase):
     def test_F1_executor_never_seals_is_blocked(self):
@@ -449,10 +479,13 @@ class TimeoutTest(AttackBase):
         from gatesmith import seal
         shim_dir = self.path("bin")
         os.makedirs(shim_dir, exist_ok=True)
-        # A PORTABLE shim (G3: `.bat` on Windows, POSIX script elsewhere) that
-        # re-invokes the running interpreter and sleeps, so the bounded `_run`
-        # timeout — not the shim — is what stops it. Space-safe (G13).
-        write_slow_shim(shim_dir, sys.executable, seconds=5)
+        # A PORTABLE shim whose GRANDCHILD holds the inherited stdout pipe. The
+        # timeout kills the DIRECT child, but the backgrounded grandchild keeps
+        # the write end open; `subprocess.run`'s Windows branch would then block
+        # in communicate() until that grandchild exits (~5 s), while proc.run
+        # kills and returns without draining. The bound below is the PRODUCT's,
+        # not the OS's.
+        write_grandchild_shim(shim_dir, sys.executable, seconds=5)
         reg = self.path(REG)
         with open(reg, "w", encoding="utf-8") as handle:
             json.dump({"gatesmith_registry": {"v": 2}, "reviews": []}, handle)
@@ -469,16 +502,19 @@ class TimeoutTest(AttackBase):
         finally:
             seal.SUB_TIMEOUT = old_timeout
             os.environ["PATH"] = old_path
+        elapsed = time.monotonic() - started
+        # K2: the contract is unchanged — the bound fired and mapped to a hard
+        # error 2, not a hang and not a wrong verdict.
         self.assertEqual(code, 2, detail)
         self.assertIn("timed out", detail)
-        # The BOUND is what stops it, and that fired above (hard error 2). The
-        # wall clock is not portable: on POSIX the killed child releases its
-        # stdout pipe at once, but on Windows the shim is a `.bat` whose own
-        # child holds the inherited pipe until the sleep ends — so the elapsed
-        # time includes that tail even though the timeout already fired. Keep a
-        # real bound per platform rather than asserting a Windows artifact.
-        elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 4.0 if os.name == "posix" else 9.0)
+        # K1/K3: the call returns in WELL under the shim's 5 s tail, on EVERY
+        # platform. A raise-but-don't-return (or drain-the-pipes) implementation
+        # blocks here for the grandchild's 5 s and fails; before the fix the
+        # Windows branch did exactly that, so the old per-platform 9.0 s
+        # relaxation was hiding a real product defect — the assertion was
+        # measuring the product, and the product was wrong.
+        self.assertLess(elapsed, 2.0,
+                        f"returned at {elapsed:.2f}s — a grandchild held the inherited pipe")
 
     @unittest.skipUnless(os.name == "posix", "POSIX shebang semantics (G13)")
     def test_G13_posix_shim_survives_a_space_in_the_interpreter_path(self):
@@ -819,14 +855,23 @@ class OutputEncodingTest(AttackBase):
     def test_F17_output_is_utf8_even_when_the_host_code_page_is_not(self):
         env = dict(self.env)
         env["PYTHONIOENCODING"] = "cp1252"     # the Windows default in CI
+        # STDOUT: an `open` line carries the em dash. A stdout-only pin fixes
+        # this one and would leave the test below vacuous, so assert BOTH
+        # streams.
         opened = self.gs("open", "--id", "r1", "--executor", "backend",
                          "--change", "x", env=env)
         self.assertEqual(opened.returncode, 0, (opened.stdout, opened.stderr))
         self.assertNotIn("\ufffd", opened.stdout)
         self.assertIn("—", opened.stdout)      # the em dash survives the trip
-        status = self.gs("status", "--id", "r1", env=env)
-        self.assertEqual(status.returncode, 0, (status.stdout, status.stderr))
-        self.assertNotIn("\ufffd", status.stdout + status.stderr)
+        # STDERR: a BLOCKED gate writes `GATE-BLOCKED: … — …` to stderr. If only
+        # stdout were pinned this stream would stay on cp1252 and the em dash
+        # would be mangled or raise — so the stderr assertion is what makes a
+        # stdout-only partial fix FAIL.
+        blocked = self.gs("gate", "--id", "nope", "--target", "push", env=env)
+        self.assertEqual(blocked.returncode, 1, (blocked.stdout, blocked.stderr))
+        self.assertIn("GATE-BLOCKED", blocked.stderr)
+        self.assertIn("—", blocked.stderr)     # the em dash on stderr too
+        self.assertNotIn("\ufffd", blocked.stdout + blocked.stderr)
 
 
 if __name__ == "__main__":

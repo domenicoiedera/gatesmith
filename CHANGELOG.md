@@ -72,9 +72,30 @@ us nothing is a release we did not verify.
   page, so the `·`/`—` separators were written as cp1252 bytes and every UTF-8
   consumer — a pipe, a CI log, another tool — read replacement characters. The
   same command produced different bytes per platform. The CLI now pins UTF-8, and
-  a guard reproduces the Windows condition on any host with `PYTHONIOENCODING`.
+  a guard reproduces the Windows condition on any host with `PYTHONIOENCODING`
+  (the guard asserts stdout AND stderr, so a stdout-only pin fails it).
   This one was found by the CI matrix *after* a clean local run on macOS: the
   platform nobody could test locally was the one that was broken.
+- **The round-7 wall-clock relaxation was a misdiagnosis, and it hid a real
+  hole.** R7 met a red F8 on Windows by loosening the bound (9 s) and recording
+  the cause as the assertion "measuring the OS". The opposite was true: the
+  assertion was measuring the **product**, and the product was wrong.
+  `subprocess.run(..., timeout=T)` on Windows kills only the DIRECT child
+  (`TerminateProcess`) and then drains the stdout pipe with `communicate()` and
+  **no timeout**, so a grandchild that inherited the pipe — `git` spawns such
+  children (diff/textconv drivers, hooks, credential and `git-remote-*`
+  helpers) — held the call ~5 s past a 0.50 s timeout, indefinitely if it never
+  exited. Emulated on POSIX the old shape returned at **5.02 s**; every
+  subprocess call (in `seal`, `evidence`, `lanes`, `worktree`) was vulnerable.
+  v0.1.0 shipped every call with no bound at all, and the round-3 timeouts
+  bounded the *direct child* without closing this. Fixed by routing every call
+  through a new `gatesmith/proc.py`, which kills the direct child and returns
+  **without draining** the pipes; F8's tight bound is restored on every platform
+  and a mutation guard (F18) falsifies the drain path. **Residual:** a killed
+  child's own grandchildren may survive the call — we no longer wait on them
+  (they are exactly the processes the OS would orphan anyway; the alternative,
+  draining, is what made the call unbounded). `evidence.py`/`lanes.py` also
+  gained the pinned UTF-8 encoding `worktree.py`/`seal.py` already had.
 
 ## [0.1.0] - 2026-10-02
 

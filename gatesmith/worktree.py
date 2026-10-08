@@ -16,10 +16,9 @@ Two properties make it safe to run while work is in progress:
 import json
 import os
 import shutil
-import subprocess
 import time
 
-from . import store
+from . import proc, store
 
 ACTIVE_WINDOW_SEC = 48 * 3600   # newer than this -> active
 STALE_WINDOW_SEC = 7 * 86400    # older than this with nothing else -> stale
@@ -27,17 +26,16 @@ DEFAULT_SCHEMA = "gatesmith-worktree-audit/v1"
 
 
 def _git(repo, *argv):
-    """Run git with an argv array — never a shell.
+    """Run git with an argv array — never a shell (via :func:`gatesmith.proc.run`).
 
     Only the pipe encoding is pinned: on a non-UTF-8 locale (Windows runners
     default to the system code page) git's output would otherwise decode as
     garbage or raise. Everything else — including the system config that
     decides line-ending normalization — must be exactly what the user's own
-    git sees, or this tool would disagree with it about what is clean.
+    git sees, or this tool would disagree with it about what is clean. On
+    expiry the direct child is killed without draining its pipes.
     """
-    return subprocess.run(["git", "-C", str(repo), *argv],
-                          capture_output=True, text=True, timeout=30, shell=False,
-                          encoding="utf-8", errors="replace")
+    return proc.run(["git", "-C", str(repo), *argv], timeout=30)
 
 
 def _parse_status_counts(porcelain):
@@ -86,8 +84,7 @@ def _process_in_use(path):
     """
     lsof = shutil.which("lsof") or "/usr/sbin/lsof"
     try:
-        result = subprocess.run([lsof, "+D", str(path), "-Fn"],
-                                capture_output=True, text=True, timeout=20, shell=False)
+        result = proc.run([lsof, "+D", str(path), "-Fn"], timeout=20)
     except Exception:
         return None
     if result.returncode == 0:

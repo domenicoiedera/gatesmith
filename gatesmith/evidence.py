@@ -28,9 +28,8 @@ which is an unreadable instrument, not a passing check.
 
 import os
 import re
-import subprocess
 
-from . import config, frozen
+from . import config, frozen, proc
 
 DEFAULT_FROZEN = "./FROZEN-registry.json"
 
@@ -99,8 +98,14 @@ def load_markers(path):
 
 
 def git(repo, *argv):
-    return subprocess.run(["git", "-C", repo, *argv], capture_output=True, text=True,
-                          timeout=GIT_TIMEOUT)
+    """A bounded ``git`` call routed through :func:`gatesmith.proc.run`.
+
+    The encoding is pinned to UTF-8 with ``errors="replace"`` so non-ASCII git
+    output (paths, names) decodes consistently on every host; a hung git raises
+    :class:`subprocess.TimeoutExpired` (mapped to exit 2 by ``cli.main``, G10)
+    and is killed without draining its pipes.
+    """
+    return proc.run(["git", "-C", repo, *argv], timeout=GIT_TIMEOUT)
 
 
 def _parse_owned(raw):
