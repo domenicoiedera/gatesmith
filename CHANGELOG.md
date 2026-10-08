@@ -68,6 +68,13 @@ us nothing is a release we did not verify.
 - `verify`'s unqualified "gate will block" was also false on a mixed registry:
   the gate is per-id, so it may admit a bound entry. The claim is now scoped to
   the entries the seal does not bind.
+- **Output bytes depended on the host.** Windows defaults stdout to its ANSI code
+  page, so the `·`/`—` separators were written as cp1252 bytes and every UTF-8
+  consumer — a pipe, a CI log, another tool — read replacement characters. The
+  same command produced different bytes per platform. The CLI now pins UTF-8, and
+  a guard reproduces the Windows condition on any host with `PYTHONIOENCODING`.
+  This one was found by the CI matrix *after* a clean local run on macOS: the
+  platform nobody could test locally was the one that was broken.
 
 ## [0.1.0] - 2026-10-02
 

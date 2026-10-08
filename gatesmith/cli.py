@@ -41,7 +41,29 @@ def build_parser():
     return parser
 
 
+def _force_utf8_output():
+    """Emit UTF-8 whatever the platform's default encoding is.
+
+    Windows defaults stdout to the ANSI code page (cp1252 in CI), so the ``·``
+    and ``—`` separators our lines use were written as cp1252 bytes: the SAME
+    command produced different bytes per platform, and every consumer reading
+    UTF-8 (a pipe, a log, a test harness) saw U+FFFD. The output is the tool's
+    property, not the host's. ``errors="replace"`` keeps a hostile path from
+    aborting the run; streams that cannot be reconfigured (in-process callers,
+    a captured StringIO) are left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv=None):
+    _force_utf8_output()
     args = build_parser().parse_args(argv)
     args._config = config.load(args.config) if args.config else {}
     try:

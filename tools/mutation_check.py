@@ -24,6 +24,7 @@ round-3 three; round 4 adds the F13/F14 two):
   * empty-reviewer unbindable (F14)  (tests.test_attacks, F14) <- NEW in round 4
   * verify --signer scope (F15)      (tests.test_attacks, F15) <- NEW in round 5
   * version single-source (F16)      (tests.test_attacks, F16) <- NEW in round 5
+  * utf-8 output on any code page (F17) (tests.test_attacks, F17) <- NEW in round 7
 
 Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
 every guard goes RED when disabled and GREEN, byte-identical, when restored.
@@ -134,6 +135,14 @@ MUTATIONS = [
         '__version__ = "9.9.9"  # MUTATION: version single-source disabled',
         "tests.test_attacks.VersionTest."
         "test_F16_version_matches_pyproject_and_the_cli",
+    ),
+    (
+        "utf-8 output on any code page (F17)",
+        "gatesmith/cli.py",
+        '            reconfigure(encoding="utf-8", errors="replace")',
+        '            pass  # MUTATION: utf-8 output pin disabled',
+        "tests.test_attacks.OutputEncodingTest."
+        "test_F17_output_is_utf8_even_when_the_host_code_page_is_not",
     ),
 ]
 

@@ -471,7 +471,14 @@ class TimeoutTest(AttackBase):
             os.environ["PATH"] = old_path
         self.assertEqual(code, 2, detail)
         self.assertIn("timed out", detail)
-        self.assertLess(time.monotonic() - started, 4.0)   # did not hang on the 5s sleep
+        # The BOUND is what stops it, and that fired above (hard error 2). The
+        # wall clock is not portable: on POSIX the killed child releases its
+        # stdout pipe at once, but on Windows the shim is a `.bat` whose own
+        # child holds the inherited pipe until the sleep ends — so the elapsed
+        # time includes that tail even though the timeout already fired. Keep a
+        # real bound per platform rather than asserting a Windows artifact.
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 4.0 if os.name == "posix" else 9.0)
 
     @unittest.skipUnless(os.name == "posix", "POSIX shebang semantics (G13)")
     def test_G13_posix_shim_survives_a_space_in_the_interpreter_path(self):
@@ -798,6 +805,28 @@ class VersionTest(AttackBase):
                              timeout=30)
         self.assertEqual(out.returncode, 0, (out.stdout, out.stderr))
         self.assertIn(expected, out.stdout)
+
+
+# ── F17: the output bytes must not depend on the host code page ──────────────
+class OutputEncodingTest(AttackBase):
+    """Windows defaults stdout to the ANSI code page, so the ``·``/``—``
+    separators were written as cp1252 bytes and every UTF-8 consumer saw U+FFFD
+    — the same command produced different output per platform (found by the CI
+    matrix, 4/4 Windows jobs red while macOS/Linux were green). ``PYTHONIOENCODING``
+    reproduces the Windows condition on any host, so this guard runs everywhere.
+    (Round-7.)"""
+
+    def test_F17_output_is_utf8_even_when_the_host_code_page_is_not(self):
+        env = dict(self.env)
+        env["PYTHONIOENCODING"] = "cp1252"     # the Windows default in CI
+        opened = self.gs("open", "--id", "r1", "--executor", "backend",
+                         "--change", "x", env=env)
+        self.assertEqual(opened.returncode, 0, (opened.stdout, opened.stderr))
+        self.assertNotIn("\ufffd", opened.stdout)
+        self.assertIn("—", opened.stdout)      # the em dash survives the trip
+        status = self.gs("status", "--id", "r1", env=env)
+        self.assertEqual(status.returncode, 0, (status.stdout, status.stderr))
+        self.assertNotIn("\ufffd", status.stdout + status.stderr)
 
 
 if __name__ == "__main__":
