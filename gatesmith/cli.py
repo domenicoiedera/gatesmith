@@ -3,6 +3,13 @@
 ``gatesmith <gate> <verb> [flags]``. Every gate is fail-closed: a non-zero exit
 means the action is not cleared. A registry that exists but cannot be parsed is
 a hard error (exit 2), never a silent empty result.
+
+The top-level ``gatesmith judge`` verb (v0.3.0) is the one NON-gate: it asks a
+typed-decision classifier (bring-your-own endpoint) about the current registry
+or a named review and prints a verdict table. It is informational by
+construction — exit 0 whatever the classifier answers, 2 only when the
+registry or the invocation itself is unreadable (usage) — because an
+uncalibrated classifier must never decide anything (see docs/judge.md).
 """
 
 import argparse
@@ -29,6 +36,28 @@ class _NoAbbrevParser(argparse.ArgumentParser):
         super().__init__(*args, **kwargs)
 
 
+def _add_judge_parser(subparsers):
+    """The `gatesmith judge` verb — advisory classifier, exit 0 informational.
+
+    It hangs off the root (not under a gate) because it belongs to no gate's
+    decision: it records a SECOND opinion beside the gate's, and the taxonomy
+    it ships with is the informational one (0 readable / 2 unreadable).
+    """
+    parser = subparsers.add_parser(
+        "judge", help="ask the configured decision classifier about the "
+                      "current registry/change — ADVISORY, exit 0 either way")
+    parser.add_argument("--registry", default=None,
+                        help=f"review registry to classify (default: "
+                             f"{review.DEFAULT_REGISTRY})")
+    parser.add_argument("--id", default=None,
+                        help="classify one named review instead of the whole registry")
+    parser.add_argument("--json", action="store_true",
+                        help="also print the raw typed answers as one JSON object "
+                             "(the audit receipt carries the same answers)")
+    parser.set_defaults(fn=review.cmd_judge)
+    return parser
+
+
 def build_parser():
     parser = _NoAbbrevParser(
         prog="gatesmith",
@@ -38,6 +67,7 @@ def build_parser():
     sub = parser.add_subparsers(dest="gate", required=True)
     for gate in GATES:
         gate.add_parser(sub)
+    _add_judge_parser(sub)
     return parser
 
 

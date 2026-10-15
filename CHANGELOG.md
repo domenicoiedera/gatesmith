@@ -7,6 +7,38 @@ All notable changes are recorded here. The format follows
 Every release also notes the failures it exposed, because a release that taught
 us nothing is a release we did not verify.
 
+## [0.3.0] - 2026-10-15
+
+### Added
+
+- **`gatesmith judge` — bring your own decision classifier (advisory).** A
+  new top-level verb classifies the current registry or a named review: 3–5
+  typed questions (executor-vs-reviewer independence, lane/file-set
+  boundedness, gate allowability, evidence, confidence), typed answers with
+  confidences, a verdict table, and one JSONL audit receipt per invocation.
+  Vendor-neutral by configuration (`JUDGE_URL` / `JUDGE_MODEL` / API key via
+  environment; documented default: the OpenCode Zen free route). Exit 0
+  informational whatever the classifier answers — 2 only on usage or an
+  unreadable registry.
+- **`review gate --judge` — one advisory `judge:` line beside the verdict.**
+  OFF by default (`--judge` or a configured `JUDGE_URL` opts in). The line is
+  printed after the deterministic verdict is computed and CANNOT move the
+  exit code in either direction (K3): the gate may block while the judge says
+  allow, or open while the judge says block, and the exit code stays the
+  gate's own. Offline the line is an honest `judge: unavailable (<reason>)`.
+  Pinned by two new mutation guards (K5: deleting the surfacing call goes
+  RED; K3: wiring that lets the judge move the exit code goes RED).
+- **`gatesmith/judge.py`** — the typed-decision client: fail-graceful (every
+  failure is a named verdict, never an exception), redaction of
+  credential-shaped strings before anything is transmitted or recorded,
+  append-only receipts (`ts`, `invocation_id`, `route`, `model`,
+  `question_keys`, answers, confidences, `state_sha256` — the payload is
+  never stored), per-invocation and cumulative call caps with named skips.
+  A clean-room public implementation of the wire contract; the deterministic
+  gate does not depend on it.
+- **Docs** — `docs/judge.md` (positioning, the graduation rule, honest
+  limits) and a README section: "advisory until calibrated".
+
 ## [Unreleased]
 
 - Planned: a baseline-comparison battery, and a project config file.

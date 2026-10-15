@@ -13,7 +13,9 @@ An agent that reviews its own work is not a second opinion. gatesmith turns
 pip install gatesmith
 ```
 
-Requires Python 3.10+. No dependencies, no network, no accounts, no model calls.
+Requires Python 3.10+. No dependencies, no accounts. The gates run fully
+offline; the only optional network call in the tool is the judge classifier
+(v0.3.0), which is off by default.
 
 ## The four gates
 
@@ -55,6 +57,33 @@ Recipes, not lock-in — the same binary everywhere:
 - `.pre-commit-hooks.yaml` — a pre-commit hook (recipe copy in `examples/`).
 - `examples/ci.yml` — a GitHub Actions snippet.
 - `examples/gatesmith.yaml` — shared default registry paths.
+
+## A second opinion, typed (v0.3.0, advisory)
+
+gatesmith can now record a **decision classifier's** opinion beside the
+gate's — yours, not ours: you point it at any endpoint (`JUDGE_URL`,
+`JUDGE_MODEL`; the documented default is the OpenCode Zen free route). The
+classifier is asked 3–5 typed questions — executor-vs-reviewer independence,
+whether the change stays inside its declared file set, whether the recorded
+evidence supports the gate decision — and every answer is a typed verdict
+with a confidence, appended to a tamper-evident JSONL receipt.
+
+```
+# Standalone: classify the current registry
+gatesmith judge --registry review-registry.json --id bump-deps
+
+# Or surface one advisory line beside the gate verdict
+JUDGE_URL=... JUDGE_API_KEY=... gatesmith review gate --id bump-deps \
+  --target deploy --allowed-signers /outside/the/repo/reviewers --judge
+```
+
+**Advisory until calibrated.** The classifier never decides anything: the
+`judge:` line is printed *after* the gate's verdict is computed and cannot
+move its exit code — pinned by a mutation guard, the same way the gates
+themselves are. Offline it degrades to one honest `judge: unavailable` line.
+The audit receipts (`ts`, route, model, question keys, answers, confidences,
+an `invocation_id`; payload digested, credentials redacted) land beside the
+gate's evidence. See `docs/judge.md`.
 
 ## The proof standard
 

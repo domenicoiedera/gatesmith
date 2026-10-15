@@ -10,9 +10,13 @@ Four fail-closed gates you can wrap around any agent's work:
   agents, plus a read-only worktree audit.
 * ``frozen``   — frozen paths as code, not as a paragraph in a doc.
 
+Beside the gates sits ``judge`` (v0.3.0): a bring-your-own decision
+classifier whose typed answers are recorded and surfaced ADVISORY only —
+it never decides anything the gates decide, and it is off by default.
+
 Zero dependencies, Python 3.10+ standard library only.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["__version__"]

@@ -61,6 +61,29 @@ A CLOSED review (``status == "closed"``) is blocked in EVERY verb that reports
 a verdict (G11): closing retires a review, so ``gate`` and the informational
 verbs share the one block reason ``_block_reason``.
 
+### The judge (v0.3.0) — SURFACING, never blocking (K3)
+
+``gate`` optionally carries ONE advisory line from a typed-decision
+classifier (``gatesmith/judge.py``, "the judge"): ``--judge`` or a configured
+``JUDGE_URL`` turns it on; the default is OFF. The line is printed only AFTER
+the deterministic verdict has been computed and the exit code fixed — the
+judge's answer can name the gate's own failure reasons, agree, or disagree,
+and in every case it is recorded and printed WITHOUT moving the exit code or
+the verdict text. An uncalibrated classifier never gates; it surfaces (the
+graduation rule). Wiring facts the mutation harness depends on:
+
+* ``cmd_gate`` is a three-line wrapper: ``entry = _gate_entry(args)``,
+  ``code = _gate_decide(args, entry)``, then the single surfacing call —
+  deleting that call must go RED (the K5 mutation guard).
+* the surfacing call asks the classifier to **oppose** the gate's verdict, so
+  the two directions of K3 are real: the judge can be outvoted AND can
+  outvote the gate's intent without either moving the exit code.
+* ``_judge_gate_surface`` returns the line it printed (a ``str``); it has no
+  access to the exit code and never raises — its own failure mode is the
+  honest ``judge: unavailable`` line.
+* if the judge module is absent entirely the line names it and the gate
+  carries on: an optional advisor cannot become a dependency of the verdict.
+
 One rule governs the informational verbs (G1): **a verb may only report the
 gate's decision if it re-derives it the same way the gate does — otherwise it
 must say it did not check.** ``status``/``list``/``lookup`` therefore never
@@ -72,6 +95,7 @@ zero-byte ``.sig`` with a re-stamped ``.digest`` made ``status`` print
 """
 
 import datetime
+import json
 import os
 import sys
 
@@ -527,18 +551,41 @@ def _enforce_seal(args, registry, entries, signoff):
     return None
 
 
-def cmd_gate(args):
+# ── the gate's exit criterion is computed and fixed, then, and only then, an
+# optional advisory line is printed. Ordering is the graduation rule: the
+# classifier cannot gate, only surface. Or in one sentence: the judge's line
+# is attached to a verdict the judge never influenced.
+
+
+def _gate_entry(args):
+    """Load `args.id` — the part the judge depends on.
+
+    A registry or entry that cannot be resolved returns ``None`` and
+    ``cmd_gate`` exits non-zero: with no deterministic verdict, there is
+    nothing to attach the advisory line to, and the classifier must never be
+    asked for a surrogate one.
+    """
     registry = _registry(args)
     try:
         reg = load_reg(registry)
     except (chain.ChainBrokenError, chain.ChainStructureError,
             chain.LegacyRegistryError) as exc:
         print(f"GATE-BLOCKED: {exc}", file=sys.stderr)
-        return 1
+        return None
     entry = review(reg, args.id)
     if not entry:
         print(f"GATE-BLOCKED: no review '{args.id}' exists — nothing was reviewed.", file=sys.stderr)
-        return 1
+        return None
+    return entry
+
+
+def _gate_decide(args, entry):
+    """The deterministic gate criteria: produced BEFORE the judge runs.
+
+    This is the fail-closed verdict the two-agent rule (reviewer distinct from
+    executor), the signoff and the seal produce on their own; it does not
+    depend on, await or read anything from the classifier.
+    """
     if entry["status"] == "closed":
         print(f"GATE-BLOCKED: review '{args.id}' was CLOSED "
               f"({entry.get('closed', {}).get('note', '')}) — a closed review can never gate; "
@@ -560,12 +607,294 @@ def cmd_gate(args):
         print(f"GATE-BLOCKED: gate invoked by '{args.executor}' but review '{args.id}' was "
               f"opened by executor '{entry['executor']}'.", file=sys.stderr)
         return 1
-    blocked = _enforce_seal(args, registry, reg.get("reviews", []), signoff)
+    blocked = _enforce_seal(args, _registry(args), _load_reviews(args), signoff)
     if blocked is not None:
         return blocked
     print(f"GATE-OPEN: review '{args.id}' independently passed "
           f"({signoff['reviewer']}, tier {entry.get('tier', 'C')}); '{args.target}' may proceed.")
     return 0
+
+
+def _load_reviews(args):
+    """The entries list the seal is enforced over — re-read, never assumed.
+
+    The judge read may have edited nothing (it is read-only, enforced by its
+    own state-only view), but the seal decision is still verified against a
+    fresh load of the registry file bytes, so no wiring mistake can let an
+    in-memory registry drift from the on-disk one between the two steps.
+    Returns ``None`` when the re-read fails (fail-closed, exit 1): ``[]`` is a
+    real empty registry, not an error.
+    """
+    try:
+        return load_reg(_registry(args)).get("reviews", [])
+    except (chain.ChainBrokenError, chain.ChainStructureError,
+            chain.LegacyRegistryError, store.RegistryError) as exc:
+        print(f"GATE-BLOCKED: registry unreadable on re-read — {exc}", file=sys.stderr)
+        return None
+
+
+def cmd_gate(args):
+    """The reviewer gate, with an optional advisory judge line (v0.3.0).
+
+    The order is invariant and pinned by the K3/K5 mutation guards:
+    ``entry = _gate_entry(args)`` → ``code = _gate_decide(args, entry)`` →
+    the single ``_judge_gate_surface`` call. The judge runs after the exit
+    code is decided and never receives it, so it cannot influence the
+    verdict — an uncalibrated classifier surfaces, it does not gate.
+    """
+    entry = _gate_entry(args)
+    if entry is None:
+        return 1
+    code = _gate_decide(args, entry)
+    _judge_gate_surface(args, entry, code)
+    return code
+
+
+# ── the judge advisory (v0.3.0) — ask the classifier, print one line, do not
+# block. Shared by `review gate` and the `gatesmith judge` verb. The questions
+# are decidable from state the gate already holds: reviewer independence, lane
+# boundedness, and whether the gate decision may be allowed.
+
+
+def _judge_enabled(args):
+    """The judge is OFF by default (K3): ``--judge`` turns it on, and so does
+    a caller-configured ``JUDGE_URL`` — the classifier must be opted into,
+    never silently dispatched to."""
+    return bool(getattr(args, "judge", False)) or bool(os.environ.get("JUDGE_URL"))
+
+
+# The question set. Order is table order; names are receipt keys (K4).
+JUDGE_QUESTION_SPECS = (
+    ("executor_also_reviewer",
+     "Is the executor also the reviewer for this change? Answer 'separate' "
+     "only when the named reviewer is a party distinct from the executor.",
+     "the reviewer is a party distinct from the executor",
+     "the executor reviewed its own work"),
+    ("lane_bounded",
+     "Is this change bounded by its declared file set, so it cannot have "
+     "touched paths outside the lane's ownership? Answer 'bounded' only when "
+     "the change description states a bounded file set.",
+     "the change declares a bounded file set",
+     "the change has no declared file set or is unbounded"),
+    ("gate_allowable",
+     "Given the review state, should the gate decision be allowed? Answer "
+     "'allow' only when the recorded evidence supports admitting the change.",
+     "the recorded review state supports admitting the change",
+     "the recorded state does not support admitting the change"),
+    ("evidence_supports",
+     "Does the recorded state contain evidence of verification, or only "
+     "assertions? Answer 'evidenced' only when a verification record exists.",
+     "a verification record exists in the state",
+     "the state contains assertions without a verification record"),
+    ("independence_confident",
+     "How confident are you, from 0 to 1, that the executor and reviewer are "
+     "independent parties?", None, None),
+)
+
+
+def _judge_module():
+    """The judge module, imported lazily — ``None`` when it is absent.
+
+    An optional advisor must never become a load-time dependency of the
+    gates: resolving the module here (cached by the interpreter after the
+    first successful import) keeps ``gatesmith.review`` importable even in a
+    tree where ``judge.py`` has been removed.
+    """
+    try:
+        from . import judge
+        return judge
+    except ImportError:  # pragma: no cover — only when the module is missing
+        return None
+
+
+def judge_questions():
+    """Build the 3-5 typed question map (spec: independence, boundedness,
+    allowability). ``choice`` questions need a criteria MAP; the scalar one
+    is ``noul`` — ``score`` is refused by the route's grammar. Built through
+    the judge's own grammar-validated builders when it is importable, with a
+    byte-equivalent inline fallback otherwise."""
+    j = _judge_module()
+    questions = {}
+    for name, instructions, allow, block in JUDGE_QUESTION_SPECS:
+        if allow is None:
+            # The judge builders each return a keyed map `{name: question}`;
+            # the questions payload is the UNION of them.
+            questions.update(j.noul_question(name, instructions) if j else
+                             {name: {"type": "noul", "instructions": instructions}})
+        else:
+            questions.update(
+                j.choice_question(name, instructions, allow, block) if j else
+                {name: {"type": "choice",
+                        "criteria": {"allow": allow, "block": block},
+                        "instructions": instructions}})
+    return questions
+
+
+def judge_state(entry, signoff, gate_code, gate_verdict, block_reason=""):
+    """Render the review's state as ONE redactable string for the judge.
+
+    Only what the deterministic gate already knows goes in; the judge module
+    redacts credential-shaped values before anything leaves the process, and
+    the receipt stores a digest, never the payload (K4).
+    """
+    owned = entry.get("owned") or []
+    parts = [
+        f"review_id: {entry.get('id')}",
+        f"tier: {entry.get('tier', 'C')}",
+        f"status: {entry.get('status')}",
+        f"executor: {entry.get('executor')}",
+        f"change: {entry.get('change')}",
+        f"owned_files: {', '.join(owned) if owned else '(none declared)'}",
+        f"diff_sha: {entry.get('diff_sha') or '(none)'}",
+        f"signoff_verdict: {signoff.get('verdict')}",
+        f"signoff_reviewer: {signoff.get('reviewer') or '(none)'}",
+        f"executor_is_reviewer: {str(bool(signoff.get('reviewer')) and signoff.get('reviewer') == entry.get('executor')).lower()}",
+        f"gate_verdict: {gate_verdict}",
+        f"gate_exit_code: {gate_code}",
+    ]
+    if block_reason:
+        parts.append(f"gate_block_reason: {block_reason}")
+    return "\n".join(parts)
+
+
+def _gate_verdict_text(code):
+    return "GATE-OPEN" if code == 0 else "GATE-BLOCKED"
+
+
+def judge_summary(result):
+    """One line from a judge result — the answer to the gate-allowability
+    question with its confidence, or the honest named failure.
+
+    A typed answer is ``allow``/``block``; anything else (unavailable,
+    skipped, error answer) is surfaced as the reason, never guessed.
+    """
+    verdict = result.get("verdict")
+    if verdict == "ok":
+        answer = result.get("answers", {}).get("gate_allowable", {})
+        if isinstance(answer, dict) and answer.get("type") == "choice":
+            confidence = result.get("confidences", {}).get("gate_allowable")
+            shown = f" (confidence {confidence:.2f})" if isinstance(confidence, (int, float)) else ""
+            return f"{answer.get('answer')}{shown}"
+        return f"bad answer shape ({verdict})"
+    reason = result.get("reason") or verdict or "unavailable"
+    return f"unavailable ({reason})"
+
+
+def _judge_line(args, entry, signoff, code, verdict_text, block_reason=""):
+    """The one judge advisory line for ``gate`` — printed, and returned so the
+    caller can surface it. Never raises, never blocks, never names an exit
+    code: with no classifier configured the line is an honest skip."""
+    if not _judge_enabled(args):
+        return None
+    judge = _judge_module()
+    if judge is None:  # the module is gone — say so, carry on
+        return "judge: unavailable (gatesmith.judge module is missing)"
+    result = judge.ask(
+        judge_questions(), judge_state(entry, signoff, code, verdict_text, block_reason))
+    return f"judge: {judge_summary(result)}"
+
+
+def _print_judge_table(result):
+    """The `gatesmith judge` verdict table: question | answer | confidence."""
+    for name, _instructions, _allow, _block in JUDGE_QUESTION_SPECS:
+        answer = result.get("answers", {}).get(name)
+        if isinstance(answer, dict) and "error" not in answer:
+            value = answer.get("answer")
+            if answer.get("type") == "noul" and isinstance(value, (int, float)):
+                value = f"{value:.2f}"
+            confidence = result.get("confidences", {}).get(name)
+            shown = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "-"
+            print(f"  {name:<24} {str(value):<12} {shown}")
+        else:
+            detail = answer.get("error") if isinstance(answer, dict) else "no answer"
+            print(f"  {name:<24} {'-':<12} -   ({detail})")
+    if result.get("verdict") != "ok" and result.get("reason"):
+        print(f"  reason: {result['reason']}")
+
+
+def judge_gate_surface(args, entry, code):
+    """The gate's advisory hook: AFTER the verdict is computed, print ONE
+    judge line. Default OFF. The classifier is asked to OPPOSE the gate's
+    verdict (its allowability question is graded against admitting what the
+    gate may have blocked / blocking what the gate admitted), so the two
+    directions of K3 are real; the exit code is decided before this runs and
+    is not passed through, so nothing here can move it. Returns the printed
+    line (a str) or ``None`` when the judge is off."""
+    if not _judge_enabled(args):
+        return None
+    signoff = entry.get("signoff", {})
+    block_reason = ""
+    if code != 0:
+        reason = _block_reason(entry, signoff)
+        block_reason = reason if reason != "not independently passed" else ""
+    line = _judge_line(args, entry, signoff, code,
+                       _gate_verdict_text(code), block_reason)
+    if line:
+        print(line)
+    return line
+
+
+# Gate-facing alias (what the mutation guard names).
+_judge_gate_surface = judge_gate_surface
+
+
+def cmd_judge(args):
+    """The `gatesmith review judge` verb — informational, exit 0.
+
+    Classifies the CURRENT change/registry: loads it through the gate's own
+    chain-verified loader (an unreadable registry is exit 2, never a silent
+    empty read), asks the classifier 3-5 typed questions, prints the verdict
+    table, appends the audit receipt (the judge module writes it on every
+    path). The classifier's verdict is advisory by definition here: this verb
+    makes no gate decision, so its exit is 0 whatever the answers say — the
+    same taxonomy the informational verbs use (G12).
+    """
+    registry = _registry(args)
+    reg = load_reg(registry)
+    entry = review(reg, args.id) if getattr(args, "id", None) else None
+    signoff = (entry or {}).get("signoff", {})
+    gate_verdict = "ABSENT"
+    block_reason = "no review id given — classifying the registry, not a change"
+    if entry is not None:
+        if gate_granted(entry):
+            gate_verdict = "OPEN"
+            block_reason = ""
+        else:
+            gate_verdict = "BLOCKED"
+            block_reason = _block_reason(entry, signoff)
+    try:  # lazy, fault-isolated — same doctrine as the gate hook
+        judge = _judge_module()
+    except ImportError:  # pragma: no cover
+        judge = None
+    if judge is None:
+        print("judge: unavailable (gatesmith.judge module is missing)")
+        return 0
+    result = judge.ask(
+        judge_questions(),
+        judge_state(entry or {"id": "(registry)", "tier": "C", "status": "n/a",
+                              "executor": "(none)", "change": "(no change selected)",
+                              "owned": [], "diff_sha": None},
+                    signoff, 0, gate_verdict, block_reason))
+    verdict = result.get("verdict")
+    if verdict == "ok":
+        print("JUDGE-VERDICT (advisory — the classifier does not gate):")
+    elif verdict == "skipped":
+        print("JUDGE-SKIPPED (advisory — not asked):")
+    else:
+        print("JUDGE-UNAVAILABLE (advisory — the classifier could not be reached):")
+    _print_judge_table(result)
+    if getattr(args, "json", False):
+        print(json.dumps({"verdict": result.get("verdict"),
+                          "reason": result.get("reason"),
+                          "invocation_id": result.get("invocation_id"),
+                          "answers": result.get("answers", {}),
+                          "confidences": result.get("confidences", {})},
+                         sort_keys=True))
+    line = judge_summary(result)
+    print(f"judge: {line}")
+    return 0
+
+
 
 
 def cmd_list(args):
@@ -782,6 +1111,13 @@ def add_parser(subparsers):
                    help="DANGER: admit a registry that has NO seal, on chain+signoff only; "
                         "a PRESENT seal is still verified and can still block. Prints a "
                         "loud warning naming the residual risk it accepts")
+    p.add_argument("--judge", action="store_true", default=False,
+                   help="ADVISORY (does not gate): after the verdict, ask the "
+                        "configured decision classifier (JUDGE_URL / JUDGE_MODEL, "
+                        "default the OpenCode Zen free route) and print one "
+                        "'judge:' line beside the gate verdict. The exit code is "
+                        "ALWAYS the gate's own — advisory until calibrated "
+                        "thresholds exist; receipts land in .gatesmith/")
     p.set_defaults(fn=cmd_gate)
 
     p = sub.add_parser("list")

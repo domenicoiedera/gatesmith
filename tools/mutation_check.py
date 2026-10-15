@@ -26,6 +26,9 @@ round-3 three; round 4 adds the F13/F14 two):
   * version single-source (F16)      (tests.test_attacks, F16) <- NEW in round 5
   * utf-8 output on any code page (F17) (tests.test_attacks, F17) <- NEW in round 7
   * kill-and-return on timeout (F18) (tests.test_attacks, F8)  <- NEW in round 8
+  * gate surfaces the judge line (K5) (tests.test_judge_cli)   <- NEW in v0.3.0
+  * judge never moves the gate exit code (K3) (tests.test_judge_cli) <- NEW
+  * judge never blocks an open gate (K3, opposite) (tests.test_judge_cli) <- NEW
 
 Some target tests seal, so ``ssh-keygen`` must be on PATH. Exits 0 only when
 every guard goes RED when disabled and GREEN, byte-identical, when restored.
@@ -132,7 +135,7 @@ MUTATIONS = [
     (
         "version single-source (F16)",
         "gatesmith/__init__.py",
-        '__version__ = "0.2.0"',
+        '__version__ = "0.3.0"',
         '__version__ = "9.9.9"  # MUTATION: version single-source disabled',
         "tests.test_attacks.VersionTest."
         "test_F16_version_matches_pyproject_and_the_cli",
@@ -152,6 +155,32 @@ MUTATIONS = [
         '    moved.wait()  # MUTATION: bound delegated to the drain thread again\n',
         "tests.test_attacks.TimeoutTest."
         "test_F8_slow_subprocess_is_a_usage_error_not_a_hang",
+    ),
+    (
+        "gate surfaces the judge line (K5)",
+        "gatesmith/review.py",
+        "    _judge_gate_surface(args, entry, code)",
+        "    pass  # MUTATION: gate judge surfacing deleted",
+        "tests.test_judge_cli.JudgeGateWiringTest."
+        "test_K5_gate_must_surface_judge_line",
+    ),
+    (
+        "judge never moves the gate exit code (K3)",
+        "gatesmith/review.py",
+        "    code = _gate_decide(args, entry)",
+        "    code = 0 if _judge_enabled(args) else _gate_decide(args, entry)  "
+        "# MUTATION: judge moved the gate's exit code",
+        "tests.test_judge_cli.JudgeGateWiringTest."
+        "test_K3_judge_exit_code_guard",
+    ),
+    (
+        "judge never blocks an open gate (K3, opposite direction)",
+        "gatesmith/review.py",
+        "    code = _gate_decide(args, entry)",
+        "    code = 1 if _judge_enabled(args) else _gate_decide(args, entry)  "
+        "# MUTATION: judge moved the gate's exit code the other way",
+        "tests.test_judge_cli.JudgeGateWiringTest."
+        "test_K3_gate_opens_while_judge_says_block",
     ),
 ]
 
