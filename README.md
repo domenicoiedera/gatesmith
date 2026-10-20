@@ -9,9 +9,37 @@ An agent that reviews its own work is not a second opinion. gatesmith turns
 
 ## Install
 
+Install the release wheel. No account, no registry, no publishing step in the middle:
+
 ```
-pip install gatesmith
+pip install https://github.com/domenicoiedera/gatesmith/releases/download/v0.3.0/gatesmith-0.3.0-py3-none-any.whl
 ```
+
+Pin the tag from source instead, if you prefer to read exactly what runs:
+
+```
+pip install "git+https://github.com/domenicoiedera/gatesmith.git@v0.3.0"
+```
+
+Isolated install, so `gatesmith` lands on your PATH without touching a project venv:
+
+```
+pipx install https://github.com/domenicoiedera/gatesmith/releases/download/v0.3.0/gatesmith-0.3.0-py3-none-any.whl
+uv tool install https://github.com/domenicoiedera/gatesmith/releases/download/v0.3.0/gatesmith-0.3.0-py3-none-any.whl
+```
+
+From a clone, for development:
+
+```
+git clone https://github.com/domenicoiedera/gatesmith && cd gatesmith
+pip install -e .
+```
+
+Any of these should end with `gatesmith --version` printing `gatesmith 0.3.0`.
+
+**There is no `gatesmith` package on PyPI**, so `pip install gatesmith` fails with
+"No matching distribution found". The lines above are the install paths that
+work; each one was run on macOS with Python 3.12 before being written here.
 
 Requires Python 3.10+. No dependencies, no accounts. The gates run fully
 offline; the only optional network call in the tool is the judge classifier
