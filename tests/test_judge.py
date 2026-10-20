@@ -50,6 +50,25 @@ def _choice_questions():
         "the executor also reviewed its own diff")
 
 
+class _QuietServer(http.server.ThreadingHTTPServer):
+    """A local stand-in server that does not print its own tracebacks.
+
+    The CLI under test may abort a request it no longer needs; the handler
+    thread then writes into a closed socket and ``socketserver`` prints a
+    ``BrokenPipeError`` traceback to stderr. That traceback belongs to this
+    harness, not to gatesmith, but tests asserting "gatesmith printed no
+    traceback" capture it and fail for the wrong reason. Swallowing the two
+    ordinary connection-teardown errors keeps those assertions honest; any
+    other exception still surfaces.
+    """
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class _FakeRoute(http.server.BaseHTTPRequestHandler):
     """Records the request bodies it receives; answers like the real route."""
 
@@ -112,7 +131,7 @@ class JudgeHTTPTestCase(unittest.TestCase):
     def setUpClass(cls):
         _FakeRoute.received = []
         _FakeRoute.mode = "ok"
-        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeRoute)
+        cls.server = _QuietServer(("127.0.0.1", 0), _FakeRoute)
         cls.port = cls.server.server_address[1]
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -188,7 +207,7 @@ class JudgeHTTPTestCase(unittest.TestCase):
         self.assertEqual(result["reason"], "bad-shape: response has no answers map")
 
     def test_missing_answer_key_is_reported_per_question(self):
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _NoulsRoute)
+        server = _QuietServer(("127.0.0.1", 0), _NoulsRoute)
         try:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
